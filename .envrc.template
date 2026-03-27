@@ -1,4 +1,4 @@
-# send-email-waggle Environment Configuration
+# herd-mail Environment Configuration
 # Copy this file to .envrc and fill in real values
 # Then run: direnv allow .
 
@@ -23,3 +23,6 @@ export WAGGLE_TO=test@example.com
 
 # Send log path (for duplicate detection)
 export WAGGLE_SEND_LOG=$HOME/.local/share/waggle-sent.log
+
+# Development: Path to local waggle (optional - only for development)
+# export WAGGLE_DEV_PATH=/path/to/local/waggle
