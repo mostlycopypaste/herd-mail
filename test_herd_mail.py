@@ -339,7 +339,7 @@ class TestMain(unittest.TestCase):
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi there!']):
             result = hm.main()
 
@@ -355,7 +355,7 @@ class TestMain(unittest.TestCase):
         """Test duplicate detection prevents send."""
         mock_check_duplicate.return_value = True
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!']):
             result = hm.main()
 
@@ -367,7 +367,7 @@ class TestMain(unittest.TestCase):
         """Test --skip-duplicate-check bypasses detection."""
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!',
                                 '--skip-duplicate-check']):
             result = hm.main()
@@ -378,7 +378,7 @@ class TestMain(unittest.TestCase):
 
     def test_dry_run(self):
         """Test --dry-run validates without sending."""
-        with patch('sys.argv', ['herd_mail.py', '--dry-run', '--to', 'test@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--dry-run', '--to', 'test@example.com',
                                 '--subject', 'Test']):
             result = hm.main()
 
@@ -389,7 +389,7 @@ class TestMain(unittest.TestCase):
         self.clear_env()
         # Don't set any env vars
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!']):
             result = hm.main()
 
@@ -397,7 +397,7 @@ class TestMain(unittest.TestCase):
 
     def test_invalid_email_address(self):
         """Test error with invalid email address."""
-        with patch('sys.argv', ['herd_mail.py', '--to', 'not_an_email',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'not_an_email',
                                 '--subject', 'Hello', '--body', 'Hi!']):
             result = hm.main()
 
@@ -405,7 +405,7 @@ class TestMain(unittest.TestCase):
 
     def test_invalid_cc_address(self):
         """Test error with invalid CC address."""
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!',
                                 '--cc', 'invalid_email']):
             result = hm.main()
@@ -419,7 +419,7 @@ class TestMain(unittest.TestCase):
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'See attached',
                                 '--attachment', 'file1.pdf', 'file2.txt']):
             result = hm.main()
@@ -435,7 +435,7 @@ class TestMain(unittest.TestCase):
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Line1\\nLine2']):
             result = hm.main()
 
@@ -479,7 +479,7 @@ class TestBodyLoading(unittest.TestCase):
             temp_path = f.name
 
         try:
-            with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+            with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                     '--subject', 'Hello', '--body-file', temp_path]):
                 result = hm.main()
 
@@ -499,7 +499,7 @@ class TestBodyLoading(unittest.TestCase):
         # Mock stdin
         with patch('sys.stdin', StringIO("Hello from stdin")):
             with patch('sys.stdin.isatty', return_value=False):
-                with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+                with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                         '--subject', 'Hello']):
                     result = hm.main()
 
@@ -509,7 +509,7 @@ class TestBodyLoading(unittest.TestCase):
 
     def test_body_file_not_found(self):
         """Test error when body file doesn't exist."""
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello',
                                 '--body-file', '/tmp/nonexistent_file_12345.txt']):
             result = hm.main()
@@ -600,6 +600,85 @@ class TestOutput(unittest.TestCase):
             hm.output_human_check(data)
         output = captured.getvalue()
         self.assertIn("No unread", output)
+
+
+class TestCmdConfig(unittest.TestCase):
+    """Test config subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    def test_config_valid(self):
+        """Test config command with valid SMTP+IMAP config."""
+        with patch('sys.argv', ['herd_mail.py', 'config']):
+            result = hm.main()
+        self.assertEqual(result, 0)
+
+    def test_config_missing_imap(self):
+        """Test config command warns about missing IMAP."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'config']):
+            result = hm.main()
+        # config still succeeds if SMTP is valid, but warns about IMAP
+        self.assertEqual(result, 0)
+
+
+class TestBackwardCompat(unittest.TestCase):
+    """Test backward compatibility for old-style invocations."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_old_style_send(self, mock_check, mock_send):
+        """Test old-style --to without subcommand still works."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+
+        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+                                '--subject', 'Hello', '--body', 'Hi!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        mock_send.assert_called_once()
+
+    def test_no_args_shows_help(self):
+        """Test no arguments exits with error (help shown)."""
+        with patch('sys.argv', ['herd_mail.py']):
+            result = hm.main()
+        self.assertEqual(result, 1)
 
 
 class TestWaggleStubs(unittest.TestCase):
