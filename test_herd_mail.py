@@ -492,6 +492,18 @@ class TestBodyLoading(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+class TestWaggleStubs(unittest.TestCase):
+    """Test that waggle function stubs exist for mocking."""
+
+    def test_stubs_exist(self):
+        """All waggle functions should be importable from herd_mail."""
+        self.assertTrue(hasattr(hm, 'send_email'))
+        self.assertTrue(hasattr(hm, 'check_recently_sent'))
+        self.assertTrue(hasattr(hm, 'read_message'))
+        self.assertTrue(hasattr(hm, 'list_inbox'))
+        self.assertTrue(hasattr(hm, 'download_attachments'))
+
+
 def run_basic_tests():
     """Run basic tests without pytest."""
     print("Running basic validation tests...")

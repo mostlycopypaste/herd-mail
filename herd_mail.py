@@ -88,7 +88,10 @@ WAGGLE_AVAILABLE = False
 WAGGLE_IMPORT_ERROR = None
 
 try:
-    from waggle import send_email, check_recently_sent, read_message
+    from waggle import (
+        send_email, check_recently_sent, read_message,
+        list_inbox, download_attachments,
+    )
     WAGGLE_AVAILABLE = True
 except ImportError as e:
     WAGGLE_IMPORT_ERROR = e
@@ -103,6 +106,12 @@ except ImportError as e:
         raise RuntimeError("waggle not installed")
 
     def read_message(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def list_inbox(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def download_attachments(*args, **kwargs):
         raise RuntimeError("waggle not installed")
 
 
