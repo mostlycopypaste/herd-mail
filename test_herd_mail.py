@@ -8,6 +8,7 @@ Or: python3 test_herd_mail.py (for basic validation)
 These tests mock SMTP/IMAP so they run without real credentials.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -249,6 +250,30 @@ class TestConfig(unittest.TestCase):
         result = hm.validate_config(cfg)
         self.assertTrue(result)
 
+    def test_validate_config_require_imap_missing(self):
+        """Test validation fails when IMAP required but missing."""
+        cfg = {
+            "smtp_host": "smtp.example.com",
+            "smtp_user": "user@example.com",
+            "smtp_pass": "secret",
+            "from_addr": "user@example.com",
+            "imap_host": None,
+        }
+        result = hm.validate_config(cfg, require_smtp=False, require_imap=True)
+        self.assertFalse(result)
+
+    def test_validate_config_require_imap_present(self):
+        """Test validation passes when IMAP required and present."""
+        cfg = {
+            "smtp_host": "smtp.example.com",
+            "smtp_user": "user@example.com",
+            "smtp_pass": "secret",
+            "from_addr": "user@example.com",
+            "imap_host": "imap.example.com",
+        }
+        result = hm.validate_config(cfg, require_smtp=False, require_imap=True)
+        self.assertTrue(result)
+
 
 class TestWaggleConfig(unittest.TestCase):
     """Test conversion to waggle's config format."""
@@ -314,7 +339,7 @@ class TestMain(unittest.TestCase):
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi there!']):
             result = hm.main()
 
@@ -330,7 +355,7 @@ class TestMain(unittest.TestCase):
         """Test duplicate detection prevents send."""
         mock_check_duplicate.return_value = True
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!']):
             result = hm.main()
 
@@ -342,7 +367,7 @@ class TestMain(unittest.TestCase):
         """Test --skip-duplicate-check bypasses detection."""
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!',
                                 '--skip-duplicate-check']):
             result = hm.main()
@@ -353,7 +378,7 @@ class TestMain(unittest.TestCase):
 
     def test_dry_run(self):
         """Test --dry-run validates without sending."""
-        with patch('sys.argv', ['herd_mail.py', '--dry-run', '--to', 'test@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--dry-run', '--to', 'test@example.com',
                                 '--subject', 'Test']):
             result = hm.main()
 
@@ -364,7 +389,7 @@ class TestMain(unittest.TestCase):
         self.clear_env()
         # Don't set any env vars
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!']):
             result = hm.main()
 
@@ -372,7 +397,7 @@ class TestMain(unittest.TestCase):
 
     def test_invalid_email_address(self):
         """Test error with invalid email address."""
-        with patch('sys.argv', ['herd_mail.py', '--to', 'not_an_email',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'not_an_email',
                                 '--subject', 'Hello', '--body', 'Hi!']):
             result = hm.main()
 
@@ -380,7 +405,7 @@ class TestMain(unittest.TestCase):
 
     def test_invalid_cc_address(self):
         """Test error with invalid CC address."""
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Hi!',
                                 '--cc', 'invalid_email']):
             result = hm.main()
@@ -394,7 +419,7 @@ class TestMain(unittest.TestCase):
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'See attached',
                                 '--attachment', 'file1.pdf', 'file2.txt']):
             result = hm.main()
@@ -410,7 +435,7 @@ class TestMain(unittest.TestCase):
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
 
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello', '--body', 'Line1\\nLine2']):
             result = hm.main()
 
@@ -454,7 +479,7 @@ class TestBodyLoading(unittest.TestCase):
             temp_path = f.name
 
         try:
-            with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+            with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                     '--subject', 'Hello', '--body-file', temp_path]):
                 result = hm.main()
 
@@ -474,7 +499,7 @@ class TestBodyLoading(unittest.TestCase):
         # Mock stdin
         with patch('sys.stdin', StringIO("Hello from stdin")):
             with patch('sys.stdin.isatty', return_value=False):
-                with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+                with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                         '--subject', 'Hello']):
                     result = hm.main()
 
@@ -484,7 +509,7 @@ class TestBodyLoading(unittest.TestCase):
 
     def test_body_file_not_found(self):
         """Test error when body file doesn't exist."""
-        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
                                 '--subject', 'Hello',
                                 '--body-file', '/tmp/nonexistent_file_12345.txt']):
             result = hm.main()
@@ -492,19 +517,527 @@ class TestBodyLoading(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+class TestOutput(unittest.TestCase):
+    """Test output formatting helpers."""
+
+    def test_output_json(self):
+        """Test JSON output goes to stdout."""
+        data = {"folder": "INBOX", "count": 1, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_json(data)
+        result = json.loads(captured.getvalue())
+        self.assertEqual(result["folder"], "INBOX")
+        self.assertEqual(result["count"], 1)
+
+    def test_output_human_list_with_messages(self):
+        """Test human-readable list output."""
+        data = {
+            "folder": "INBOX",
+            "count": 1,
+            "messages": [{
+                "uid": "42",
+                "from_addr": "alice@example.com",
+                "from_name": "Alice",
+                "subject": "Hello",
+                "date": "Mon, 24 Mar 2026 10:00:00 -0400",
+                "unread": True,
+                "size": 1024,
+            }]
+        }
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_list(data)
+        output = captured.getvalue()
+        self.assertIn("alice@example.com", output)
+        self.assertIn("Hello", output)
+
+    def test_output_human_list_empty(self):
+        """Test human-readable list output with no messages."""
+        data = {"folder": "INBOX", "count": 0, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_list(data)
+        output = captured.getvalue()
+        self.assertIn("No messages", output)
+
+    def test_output_human_read(self):
+        """Test human-readable read output."""
+        data = {
+            "uid": "42",
+            "folder": "INBOX",
+            "from_addr": "alice@example.com",
+            "from_name": "Alice",
+            "subject": "Hello",
+            "date": "Mon, 24 Mar 2026",
+            "to": "bob@example.com",
+            "body_plain": "Hi Bob!",
+            "body_html": None,
+            "attachments": [],
+        }
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_read(data)
+        output = captured.getvalue()
+        self.assertIn("From: Alice <alice@example.com>", output)
+        self.assertIn("Hi Bob!", output)
+
+    def test_output_human_check_with_unread(self):
+        """Test human-readable check output with unread messages."""
+        data = {"folder": "INBOX", "unread_count": 3, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_check(data)
+        output = captured.getvalue()
+        self.assertIn("3", output)
+        self.assertIn("unread", output)
+
+    def test_output_human_check_none_unread(self):
+        """Test human-readable check output with no unread messages."""
+        data = {"folder": "INBOX", "unread_count": 0, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_check(data)
+        output = captured.getvalue()
+        self.assertIn("No unread", output)
+
+
+class TestCmdConfig(unittest.TestCase):
+    """Test config subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    def test_config_valid(self):
+        """Test config command with valid SMTP+IMAP config."""
+        with patch('sys.argv', ['herd_mail.py', 'config']):
+            result = hm.main()
+        self.assertEqual(result, 0)
+
+    def test_config_missing_imap(self):
+        """Test config command warns about missing IMAP."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'config']):
+            result = hm.main()
+        # config still succeeds if SMTP is valid, but warns about IMAP
+        self.assertEqual(result, 0)
+
+
+class TestBackwardCompat(unittest.TestCase):
+    """Test backward compatibility for old-style invocations."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_old_style_send(self, mock_check, mock_send):
+        """Test old-style --to without subcommand still works."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+
+        with patch('sys.argv', ['herd_mail.py', '--to', 'friend@example.com',
+                                '--subject', 'Hello', '--body', 'Hi!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        mock_send.assert_called_once()
+
+    def test_no_args_shows_help(self):
+        """Test no arguments exits with error (help shown)."""
+        with patch('sys.argv', ['herd_mail.py']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
+class TestCmdList(unittest.TestCase):
+    """Test list subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.list_inbox')
+    def test_list_json_output(self, mock_list):
+        """Test list outputs JSON to stdout."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "alice@example.com", "from_name": "Alice",
+             "subject": "Hello", "date": "Mon, 24 Mar 2026", "flags": "",
+             "unread": True, "size": 1024},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["messages"][0]["from_addr"], "alice@example.com")
+
+    @patch('herd_mail.list_inbox')
+    def test_list_unread_filter(self, mock_list):
+        """Test --unread filters to unread only."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "a@example.com", "from_name": "A",
+             "subject": "Read", "date": "Mon", "flags": "\\Seen",
+             "unread": False, "size": 100},
+            {"uid": "2", "from_addr": "b@example.com", "from_name": "B",
+             "subject": "Unread", "date": "Tue", "flags": "",
+             "unread": True, "size": 200},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list', '--unread']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["messages"][0]["uid"], "2")
+
+    @patch('herd_mail.list_inbox')
+    def test_list_empty(self, mock_list):
+        """Test list with empty inbox."""
+        mock_list.return_value = []
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 0)
+
+    @patch('herd_mail.list_inbox')
+    def test_list_human_output(self, mock_list):
+        """Test list with --human flag."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "alice@example.com", "from_name": "Alice",
+             "subject": "Hello", "date": "Mon, 24 Mar 2026", "flags": "",
+             "unread": True, "size": 1024},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn("alice@example.com", output)
+
+    def test_list_no_imap(self):
+        """Test list fails without IMAP config."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'list']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
+class TestCmdRead(unittest.TestCase):
+    """Test read subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.read_message')
+    def test_read_json_output(self, mock_read):
+        """Test read outputs full message as JSON."""
+        mock_read.return_value = {
+            "uid": "42", "folder": "INBOX",
+            "message_id": "<abc@example.com>",
+            "from_addr": "alice@example.com", "from_name": "Alice",
+            "subject": "Hello", "date": "Mon, 24 Mar 2026",
+            "to": "bob@example.com",
+            "body_plain": "Hi Bob!", "body_html": None,
+            "in_reply_to": None, "references": None,
+            "attachments": [],
+        }
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'read', '42']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["uid"], "42")
+        self.assertEqual(data["body_plain"], "Hi Bob!")
+
+    @patch('herd_mail.read_message')
+    def test_read_human_output(self, mock_read):
+        """Test read with --human flag."""
+        mock_read.return_value = {
+            "uid": "42", "folder": "INBOX",
+            "from_addr": "alice@example.com", "from_name": "Alice",
+            "subject": "Hello", "date": "Mon, 24 Mar 2026",
+            "to": "bob@example.com",
+            "body_plain": "Hi Bob!", "body_html": None,
+            "attachments": [],
+        }
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'read', '42', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn("From: Alice <alice@example.com>", output)
+        self.assertIn("Hi Bob!", output)
+
+    @patch('herd_mail.read_message')
+    def test_read_connection_error(self, mock_read):
+        """Test read handles connection errors."""
+        mock_read.side_effect = ConnectionError("Connection refused")
+        with patch('sys.argv', ['herd_mail.py', 'read', '99']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+    def test_read_no_imap(self):
+        """Test read fails without IMAP config."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'read', '42']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
+class TestCmdCheck(unittest.TestCase):
+    """Test check subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.list_inbox')
+    def test_check_has_unread(self, mock_list):
+        """Test check returns 0 when unread messages exist."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "a@example.com", "from_name": "A",
+             "subject": "New", "date": "Mon", "flags": "",
+             "unread": True, "size": 100},
+            {"uid": "2", "from_addr": "b@example.com", "from_name": "B",
+             "subject": "Read", "date": "Tue", "flags": "\\Seen",
+             "unread": False, "size": 200},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'check']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["unread_count"], 1)
+
+    @patch('herd_mail.list_inbox')
+    def test_check_no_unread(self, mock_list):
+        """Test check returns 1 when no unread messages."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "a@example.com", "from_name": "A",
+             "subject": "Read", "date": "Mon", "flags": "\\Seen",
+             "unread": False, "size": 100},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'check']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 1)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["unread_count"], 0)
+
+    @patch('herd_mail.list_inbox')
+    def test_check_connection_error(self, mock_list):
+        """Test check returns 2 on error."""
+        mock_list.side_effect = ConnectionError("Connection refused")
+        with patch('sys.argv', ['herd_mail.py', 'check']):
+            result = hm.main()
+        self.assertEqual(result, 2)
+
+    @patch('herd_mail.list_inbox')
+    def test_check_human_output(self, mock_list):
+        """Test check with --human flag."""
+        mock_list.return_value = [
+            {"uid": "1", "unread": True, "from_addr": "a@example.com",
+             "from_name": "A", "subject": "New", "date": "Mon",
+             "flags": "", "size": 100},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'check', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn("1", output)
+        self.assertIn("unread", output)
+
+
+class TestCmdDownload(unittest.TestCase):
+    """Test download subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.download_attachments')
+    def test_download_files(self, mock_dl):
+        """Test download returns file paths as JSON."""
+        mock_dl.return_value = ["/tmp/report.pdf", "/tmp/data.csv"]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["uid"], "42")
+        self.assertEqual(len(data["files"]), 2)
+
+    @patch('herd_mail.download_attachments')
+    def test_download_no_attachments(self, mock_dl):
+        """Test download with no attachments returns empty list."""
+        mock_dl.return_value = []
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["files"], [])
+
+    @patch('herd_mail.download_attachments')
+    def test_download_with_dest_dir(self, mock_dl):
+        """Test download with --dest-dir."""
+        mock_dl.return_value = ["/custom/dir/file.pdf"]
+        captured = StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('sys.argv', ['herd_mail.py', 'download', '42', '--dest-dir', tmpdir]):
+                with patch('sys.stdout', captured):
+                    result = hm.main()
+        self.assertEqual(result, 0)
+        mock_dl.assert_called_once()
+        self.assertTrue(tmpdir in str(mock_dl.call_args))
+
+    @patch('herd_mail.download_attachments')
+    def test_download_connection_error(self, mock_dl):
+        """Test download handles connection errors."""
+        mock_dl.side_effect = ConnectionError("Connection refused")
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+    def test_download_no_imap(self):
+        """Test download fails without IMAP config."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
+class TestWaggleStubs(unittest.TestCase):
+    """Test that waggle function stubs exist for mocking."""
+
+    def test_stubs_exist(self):
+        """All waggle functions should be importable from herd_mail."""
+        self.assertTrue(hasattr(hm, 'send_email'))
+        self.assertTrue(hasattr(hm, 'check_recently_sent'))
+        self.assertTrue(hasattr(hm, 'read_message'))
+        self.assertTrue(hasattr(hm, 'list_inbox'))
+        self.assertTrue(hasattr(hm, 'download_attachments'))
+
+
 def run_basic_tests():
     """Run basic tests without pytest."""
     print("Running basic validation tests...")
     print("=" * 60)
 
-    # Test 1: Email validation
     print("\n1. Testing email validation...")
     assert hm.validate_email_address("user@example.com") == True
     assert hm.validate_email_address("invalid") == False
     assert hm.validate_email_address("user\n@example.com") == False
-    print("   ✓ Email validation works")
+    print("   Pass")
 
-    # Test 2: Port parsing
     print("\n2. Testing port parsing...")
     assert hm.parse_port("465", 0, "test") == 465
     try:
@@ -512,21 +1045,18 @@ def run_basic_tests():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
-    print("   ✓ Port parsing works")
+    print("   Pass")
 
-    # Test 3: Escape sequences
     print("\n3. Testing escape sequences...")
     assert hm.decode_escape_sequences("hello\\nworld") == "hello\nworld"
     assert hm.decode_escape_sequences("hello\\\\world") == "hello\\world"
-    print("   ✓ Escape sequence handling works")
+    print("   Pass")
 
-    # Test 4: Sanitization
     print("\n4. Testing sanitization...")
     assert hm.sanitize_for_display("hello\x1b[31mworld") == "helloworld"
     assert hm.sanitize_for_display("hello\nworld") == "hello\nworld"
-    print("   ✓ Sanitization works")
+    print("   Pass")
 
-    # Test 5: Config loading
     print("\n5. Testing config loading...")
     os.environ["WAGGLE_HOST"] = "smtp.example.com"
     os.environ["WAGGLE_USER"] = "user@example.com"
@@ -536,29 +1066,30 @@ def run_basic_tests():
     cfg = hm.get_config()
     assert cfg["smtp_host"] == "smtp.example.com"
     assert cfg["smtp_port"] == 465
-    print("   ✓ Config loads correctly")
+    print("   Pass")
 
-    # Test 6: Config validation
-    print("\n6. Testing config validation...")
-    assert hm.validate_config(cfg) == True
-    print("   ✓ Valid config passes")
+    print("\n6. Testing IMAP validation...")
+    assert hm.validate_config(cfg, require_smtp=False, require_imap=True) == False
+    cfg["imap_host"] = "imap.example.com"
+    assert hm.validate_config(cfg, require_smtp=False, require_imap=True) == True
+    print("   Pass")
 
-    incomplete = {"smtp_host": "", "smtp_user": "user", "smtp_pass": "pass", "from_addr": "user"}
-    assert hm.validate_config(incomplete) == False
-    print("   ✓ Invalid config fails correctly")
-
-    # Test 7: Waggle config conversion
-    print("\n7. Testing waggle config conversion...")
-    waggle_cfg = hm.build_waggle_config(cfg)
-    assert waggle_cfg["host"] == "smtp.example.com"
-    assert "imap_host" in waggle_cfg
-    print("   ✓ Config converts to waggle format")
+    print("\n7. Testing output helpers...")
+    import json
+    from io import StringIO
+    data = {"folder": "INBOX", "count": 0, "messages": []}
+    captured = StringIO()
+    import sys as _sys
+    old_stdout = _sys.stdout
+    _sys.stdout = captured
+    hm.output_json(data)
+    _sys.stdout = old_stdout
+    assert json.loads(captured.getvalue())["count"] == 0
+    print("   Pass")
 
     print("\n" + "=" * 60)
-    print("All basic tests passed! ✓")
-    print("\nFor full test suite, install pytest and run:")
-    print("  pip install pytest")
-    print("  python3 -m pytest test_herd_mail.py -v")
+    print("All basic tests passed!")
+    print("\nFor full test suite: python3 -m pytest test_herd_mail.py -v")
 
 
 if __name__ == "__main__":

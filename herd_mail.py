@@ -3,43 +3,27 @@
 herd-mail: AI-to-AI communication facilitator for the herd.
 
 A secure, user-friendly wrapper for waggle that handles the full lifecycle
-of herd email communication: configuration, threading, duplication prevention,
-and sent-folder synchronization.
+of herd email communication: sending, reading, checking, and downloading.
 
-Features:
-- Markdown to HTML conversion with optional rich formatting
-- Thread-aware replies (fetches original for quoting)
-- Attachment support with security validation
-- Duplicate prevention (checks send log)
-- Automatic Sent folder saving via IMAP
-- Environment-based configuration (no hardcoded credentials)
+Commands:
+    herd_mail.py send --to recipient@example.com --subject "Hello" --body "Message"
+    herd_mail.py list [--folder INBOX] [--limit 20] [--unread] [--human]
+    herd_mail.py read <uid> [--folder INBOX] [--human]
+    herd_mail.py check [--folder INBOX] [--human]
+    herd_mail.py download <uid> [--folder INBOX] [--dest-dir .]
+    herd_mail.py config
 
-Usage:
-    # Send simple email
-    python3 herd_mail.py --to recipient@example.com --subject "Hello" --body "Message"
-
-    # Send with body from file
-    python3 herd_mail.py --to recipient@example.com --subject "Hello" --body-file message.md
-
-    # Reply to a message (auto-fetches original for threading)
-    python3 herd_mail.py --message-id 42 --to sender@example.com --subject "Re: Hello"
-
-    # With attachment
-    python3 herd_mail.py --to recipient@example.com --body "See attached" --attachment file.pdf
-
-    # Rich HTML formatting (requires markdown + pygments)
-    python3 herd_mail.py --to recipient@example.com --body-file message.md --rich
-
-Environment Variables (all optional, see .envrc.template):
+Environment Variables (see .envrc.template):
     WAGGLE_HOST         SMTP host
     WAGGLE_PORT         SMTP port (default: 465)
-    WAGGLE_USER         SMTP username
-    WAGGLE_PASS         SMTP password
+    WAGGLE_USER         SMTP/IMAP username
+    WAGGLE_PASS         SMTP/IMAP password
     WAGGLE_FROM         From email address
     WAGGLE_NAME         Display name
     WAGGLE_TLS          Use TLS (default: true)
-    WAGGLE_IMAP_HOST    IMAP host (for Sent folder)
+    WAGGLE_IMAP_HOST    IMAP host (required for list/read/check/download)
     WAGGLE_IMAP_PORT    IMAP port (default: 993)
+    WAGGLE_IMAP_TLS     Use IMAP TLS (default: true)
     WAGGLE_TO           Default test recipient
     WAGGLE_SEND_LOG     Path to send log (for duplicate detection)
     WAGGLE_DEV_PATH     Optional: Path to local waggle for development
@@ -49,6 +33,7 @@ License: MIT
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -63,6 +48,7 @@ DEFAULT_IMAP_PORT = 993
 DEFAULT_DUPLICATE_CHECK_MINUTES = 5
 DEFAULT_IMAP_FOLDER = "INBOX"
 DEFAULT_NO_BODY_MESSAGE = "(No message body)"
+DEFAULT_LIST_LIMIT = 20
 
 # Logging setup
 logging.basicConfig(
@@ -88,7 +74,10 @@ WAGGLE_AVAILABLE = False
 WAGGLE_IMPORT_ERROR = None
 
 try:
-    from waggle import send_email, check_recently_sent, read_message
+    from waggle import (
+        send_email, check_recently_sent, read_message,
+        list_inbox, download_attachments,
+    )
     WAGGLE_AVAILABLE = True
 except ImportError as e:
     WAGGLE_IMPORT_ERROR = e
@@ -103,6 +92,12 @@ except ImportError as e:
         raise RuntimeError("waggle not installed")
 
     def read_message(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def list_inbox(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def download_attachments(*args, **kwargs):
         raise RuntimeError("waggle not installed")
 
 
@@ -338,13 +333,14 @@ def get_config() -> dict[str, Any]:
     }
 
 
-def validate_config(cfg: dict[str, Any], require_smtp: bool = True) -> bool:
+def validate_config(cfg: dict[str, Any], require_smtp: bool = True, require_imap: bool = False) -> bool:
     """
     Validate configuration has required values.
 
     Args:
         cfg: Configuration dictionary
         require_smtp: Whether to require SMTP settings
+        require_imap: Whether to require IMAP settings
 
     Returns:
         True if valid, False otherwise
@@ -357,10 +353,13 @@ def validate_config(cfg: dict[str, Any], require_smtp: bool = True) -> bool:
             if not cfg.get(key):
                 errors.append(f"Missing {key} (set WAGGLE_{key.upper()})")
 
-        # Validate from_addr is a valid email
         from_addr = cfg.get("from_addr")
         if from_addr and not validate_email_address(from_addr):
             errors.append(f"Invalid from_addr email format: {from_addr}")
+
+    if require_imap:
+        if not cfg.get("imap_host"):
+            errors.append("Missing imap_host (set WAGGLE_IMAP_HOST)")
 
     if errors:
         logger.error("Configuration errors:")
@@ -396,56 +395,70 @@ def build_waggle_config(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def main() -> int:
-    """
-    Main entry point.
+def output_json(data: dict[str, Any]) -> None:
+    """Write JSON to stdout. All logging must go to stderr."""
+    print(json.dumps(data, indent=2, default=str))
 
-    Returns:
-        Exit code (0 for success, 1 for error)
-    """
-    # Check if waggle is available (unless we're just validating imports for tests)
-    if not WAGGLE_AVAILABLE:
-        logger.error("Error: waggle not installed. Run: pip install waggle-mail")
-        if WAGGLE_IMPORT_ERROR:
-            logger.error(f"Details: {WAGGLE_IMPORT_ERROR}")
-        return 1
 
-    parser = argparse.ArgumentParser(
-        description="Send herd emails with Markdown, attachments, and threading via waggle",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s --to friend@example.com --subject "Hello" --body "Hi there!"
-  %(prog)s --to friend@example.com --subject "Hello" --body-file message.md
-  %(prog)s --message-id 42 --to sender@example.com --subject "Re: Hello"
-  %(prog)s --to friend@example.com --body "See attached" --attachment doc.pdf
-        """
-    )
+def output_human_list(data: dict[str, Any]) -> None:
+    """Write human-readable message list to stdout."""
+    messages = data.get("messages", [])
+    if not messages:
+        print(f"No messages in {data['folder']}.")
+        return
 
-    parser.add_argument("--to", required=True,
-                        help="Recipient email address")
-    parser.add_argument("--subject", required=True,
-                        help="Email subject line")
-    parser.add_argument("--body",
-                        help="Email body (Markdown supported)")
-    parser.add_argument("--body-file",
-                        help="Read body from file (UTF-8)")
-    parser.add_argument("--attachment", nargs="+",
-                        help="File(s) to attach")
-    parser.add_argument("--cc",
-                        help="CC recipients (comma-separated)")
-    parser.add_argument("--reply-to",
-                        help="Reply-To address")
-    parser.add_argument("--message-id",
-                        help="IMAP message ID to reply to (enables threading)")
-    parser.add_argument("--rich", action="store_true",
-                        help="Enable rich HTML formatting (requires markdown, pygments)")
-    parser.add_argument("--skip-duplicate-check", action="store_true",
-                        help="Skip checking for recent duplicates")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Validate config without sending")
+    print(f"{'UID':<8} {'From':<30} {'Subject':<40} {'Date':<20} {'Status'}")
+    print("-" * 110)
+    for msg in messages:
+        status = "*" if msg.get("unread") else " "
+        from_name = msg.get("from_name", "")
+        from_addr = msg.get("from_addr", "")
+        # Show name if available, otherwise email; prefer showing the email for clarity
+        from_display = f"{from_name} ({from_addr})" if from_name and from_addr else (from_name or from_addr or "")
+        subject = msg.get("subject", "(no subject)")
+        from_display = from_display[:28] if len(from_display) > 28 else from_display
+        subject = subject[:38] if len(subject) > 38 else subject
+        date = msg.get("date", "")[:18]
+        print(f"{msg['uid']:<8} {from_display:<30} {subject:<40} {date:<20} {status}")
 
-    args = parser.parse_args()
+
+def output_human_read(data: dict[str, Any]) -> None:
+    """Write human-readable message to stdout."""
+    from_name = data.get("from_name", "")
+    from_addr = data.get("from_addr", "")
+    from_display = f"{from_name} <{from_addr}>" if from_name else from_addr
+
+    print(f"From: {from_display}")
+    print(f"To: {data.get('to', '')}")
+    print(f"Date: {data.get('date', '')}")
+    print(f"Subject: {data.get('subject', '')}")
+
+    attachments = data.get("attachments", [])
+    if attachments:
+        names = ", ".join(a.get("filename", "unknown") for a in attachments)
+        print(f"Attachments: {names}")
+
+    print("-" * 60)
+
+    body = data.get("body_plain") or data.get("body_html") or "(no body)"
+    print(body)
+
+
+def output_human_check(data: dict[str, Any]) -> None:
+    """Write human-readable check result to stdout."""
+    count = data.get("unread_count", 0)
+    folder = data.get("folder", "INBOX")
+    if count == 0:
+        print(f"No unread messages in {folder}.")
+    else:
+        print(f"{count} unread message(s) in {folder}.")
+
+
+def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the send subcommand."""
+    # Handle --dry-run as alias for config command (before email validation)
+    if args.dry_run:
+        return cmd_config(args, cfg)
 
     # Validate email addresses early
     if not validate_email_address(args.to):
@@ -460,27 +473,8 @@ Examples:
         logger.error(f"Invalid Reply-To email address: {sanitize_for_display(args.reply_to)}")
         return 1
 
-    # Load configuration
-    try:
-        cfg = get_config()
-    except ValueError as e:
-        logger.error(f"Configuration error: {e}")
-        return 1
-
-    if args.dry_run:
-        if validate_config(cfg):
-            logger.info("Configuration valid!")
-            # Don't expose full username in output for security
-            smtp_user_display = cfg['smtp_user'][:3] + "***" if cfg['smtp_user'] else "***"
-            logger.info(f"  SMTP: {smtp_user_display}@{cfg['smtp_host']}:{cfg['smtp_port']}")
-            logger.info(f"  From: {cfg['from_name']} <{cfg['from_addr']}>")
-            if cfg.get("imap_host"):
-                logger.info(f"  IMAP: {cfg['imap_host']}:{cfg['imap_port']} (Sent folder enabled)")
-            return 0
-        return 1
-
-    # Validate configuration
-    if not validate_config(cfg):
+    # Validate SMTP configuration
+    if not validate_config(cfg, require_smtp=True):
         return 1
 
     # Get body content
@@ -500,10 +494,8 @@ Examples:
             logger.error(f"Error reading body file: {e}")
             return 1
     elif args.body:
-        # Decode common escape sequences from command line
         body = decode_escape_sequences(args.body)
     else:
-        # Try reading from stdin
         if not sys.stdin.isatty():
             try:
                 body = sys.stdin.read()
@@ -523,11 +515,11 @@ Examples:
                 config=build_waggle_config(cfg)
             ):
                 logger.warning(
-                    f"⚠️  Duplicate detected: recently sent to "
+                    f"Duplicate detected: recently sent to "
                     f"{sanitize_for_display(args.to)} with similar subject"
                 )
                 logger.info("Use --skip-duplicate-check to override")
-                return 0  # Not an error, just skipped
+                return 0
         except (OSError, ValueError) as e:
             logger.warning(f"Could not check for duplicates: {e}")
             logger.info("Continuing anyway...")
@@ -573,28 +565,280 @@ Examples:
             config=build_waggle_config(cfg),
         )
 
-        logger.info("✓ Email sent successfully!")
+        logger.info("Email sent successfully!")
         if cfg.get("imap_host"):
             logger.info("  (Saved to Sent folder via IMAP)")
 
         return 0
 
     except ConnectionError as e:
-        logger.error(f"✗ Connection error: {e}")
+        logger.error(f"Connection error: {e}")
         return 1
     except TimeoutError as e:
-        logger.error(f"✗ Timeout error: {e}")
+        logger.error(f"Timeout error: {e}")
         return 1
     except ValueError as e:
-        logger.error(f"✗ Invalid input: {e}")
+        logger.error(f"Invalid input: {e}")
         return 1
     except OSError as e:
-        logger.error(f"✗ I/O error: {e}")
+        logger.error(f"I/O error: {e}")
         return 1
     except Exception as e:
-        logger.error(f"✗ Unexpected error: {e}")
-        logger.debug("", exc_info=True)  # Full traceback in debug mode
+        logger.error(f"Unexpected error: {e}")
+        logger.debug("", exc_info=True)
         return 1
+
+
+def cmd_config(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the config subcommand. Validates SMTP and IMAP settings."""
+    smtp_valid = validate_config(cfg, require_smtp=True, require_imap=False)
+
+    if smtp_valid:
+        logger.info("SMTP configuration valid.")
+        smtp_user_display = cfg['smtp_user'][:3] + "***" if cfg['smtp_user'] else "***"
+        logger.info(f"  SMTP: {smtp_user_display}@{cfg['smtp_host']}:{cfg['smtp_port']}")
+        logger.info(f"  From: {cfg['from_name']} <{cfg['from_addr']}>")
+    else:
+        logger.error("SMTP configuration invalid.")
+
+    if cfg.get("imap_host"):
+        logger.info(f"  IMAP: {cfg['imap_host']}:{cfg['imap_port']} (configured)")
+    else:
+        logger.warning("  IMAP: not configured (set WAGGLE_IMAP_HOST for read commands)")
+
+    return 0 if smtp_valid else 1
+
+
+def cmd_list(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the list subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    try:
+        messages = list_inbox(
+            folder=args.folder,
+            limit=args.limit,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to list messages: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error listing messages: {e}")
+        return 1
+
+    if args.unread:
+        messages = [m for m in messages if m.get("unread")]
+
+    data = {
+        "folder": args.folder,
+        "count": len(messages),
+        "messages": messages,
+    }
+
+    if args.human:
+        output_human_list(data)
+    else:
+        output_json(data)
+
+    return 0
+
+
+def cmd_read(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the read subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    try:
+        message = read_message(
+            args.uid,
+            folder=args.folder,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to read message {args.uid}: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error reading message: {e}")
+        return 1
+
+    if args.human:
+        output_human_read(message)
+    else:
+        output_json(message)
+
+    return 0
+
+
+def cmd_check(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """
+    Handle the check subcommand.
+
+    Exit codes: 0=has unread, 1=no unread, 2=error.
+    """
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 2
+
+    try:
+        messages = list_inbox(
+            folder=args.folder,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to check messages: {e}")
+        return 2
+    except Exception as e:
+        logger.error(f"Unexpected error checking messages: {e}")
+        return 2
+
+    unread = [m for m in messages if m.get("unread")]
+
+    data = {
+        "folder": args.folder,
+        "unread_count": len(unread),
+        "messages": unread,
+    }
+
+    if args.human:
+        output_human_check(data)
+    else:
+        output_json(data)
+
+    return 0 if unread else 1
+
+
+def cmd_download(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the download subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    # Ensure dest_dir exists
+    dest_dir = Path(args.dest_dir)
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Cannot create destination directory: {e}")
+        return 1
+
+    try:
+        files = download_attachments(
+            args.uid,
+            folder=args.folder,
+            dest_dir=str(dest_dir),
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to download attachments: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error downloading attachments: {e}")
+        return 1
+
+    data = {
+        "uid": args.uid,
+        "folder": args.folder,
+        "files": files,
+    }
+
+    output_json(data)
+    return 0
+
+
+def main() -> int:
+    """Main entry point with subcommand dispatch."""
+    if not WAGGLE_AVAILABLE:
+        logger.error("Error: waggle not installed. Run: pip install waggle-mail")
+        if WAGGLE_IMPORT_ERROR:
+            logger.error(f"Details: {WAGGLE_IMPORT_ERROR}")
+        return 1
+
+    # Backward compat: detect old-style invocation (no subcommand, but --to present)
+    # Work on a copy to avoid mutating the global sys.argv
+    argv = sys.argv[:]
+    if len(argv) > 1 and argv[1].startswith('--'):
+        if '--to' in argv:
+            logger.warning("Deprecation warning: use 'herd_mail.py send --to ...' instead")
+            argv.insert(1, 'send')
+        elif '--dry-run' in argv:
+            logger.warning("Deprecation warning: use 'herd_mail.py config' instead")
+            argv.insert(1, 'send')
+
+    parser = argparse.ArgumentParser(
+        description="herd-mail: AI-to-AI email communication via waggle",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # send subcommand
+    send_parser = subparsers.add_parser("send", help="Send an email")
+    send_parser.add_argument("--to", required=True, help="Recipient email address")
+    send_parser.add_argument("--subject", required=True, help="Email subject line")
+    send_parser.add_argument("--body", help="Email body (Markdown supported)")
+    send_parser.add_argument("--body-file", help="Read body from file (UTF-8)")
+    send_parser.add_argument("--attachment", nargs="+", help="File(s) to attach")
+    send_parser.add_argument("--cc", help="CC recipients (comma-separated)")
+    send_parser.add_argument("--reply-to", help="Reply-To address")
+    send_parser.add_argument("--message-id", help="IMAP message ID to reply to (enables threading)")
+    send_parser.add_argument("--rich", action="store_true", help="Enable rich HTML formatting")
+    send_parser.add_argument("--skip-duplicate-check", action="store_true", help="Skip duplicate detection")
+    send_parser.add_argument("--dry-run", action="store_true", help="Validate config without sending")
+
+    # list subcommand
+    list_parser = subparsers.add_parser("list", help="List messages in a folder")
+    list_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="IMAP folder (default: INBOX)")
+    list_parser.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT, help="Max messages (default: 20)")
+    list_parser.add_argument("--unread", action="store_true", help="Only show unread messages")
+    list_parser.add_argument("--human", action="store_true", help="Human-readable output")
+
+    # read subcommand
+    read_parser = subparsers.add_parser("read", help="Read a full message by UID")
+    read_parser.add_argument("uid", help="IMAP message UID")
+    read_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="IMAP folder (default: INBOX)")
+    read_parser.add_argument("--human", action="store_true", help="Human-readable output")
+
+    # check subcommand
+    check_parser = subparsers.add_parser("check", help="Check for unread messages")
+    check_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="IMAP folder (default: INBOX)")
+    check_parser.add_argument("--human", action="store_true", help="Human-readable output")
+
+    # download subcommand
+    dl_parser = subparsers.add_parser("download", help="Download attachments from a message")
+    dl_parser.add_argument("uid", help="IMAP message UID")
+    dl_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="IMAP folder (default: INBOX)")
+    dl_parser.add_argument("--dest-dir", default=".", help="Destination directory (default: .)")
+
+    # config subcommand
+    subparsers.add_parser("config", help="Validate configuration")
+
+    args = parser.parse_args(argv[1:])
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    # Load configuration
+    try:
+        cfg = get_config()
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        return 1
+
+    # Dispatch to command handler
+    commands = {
+        "send": cmd_send,
+        "list": cmd_list,
+        "read": cmd_read,
+        "check": cmd_check,
+        "download": cmd_download,
+        "config": cmd_config,
+    }
+
+    handler = commands.get(args.command)
+    if handler:
+        return handler(args, cfg)
+
+    logger.error(f"Unknown command: {args.command}")
+    return 1
 
 
 if __name__ == "__main__":

@@ -1,21 +1,33 @@
 # herd-mail 🐝
 
-**Version 2.0** — Production-ready, security-hardened email CLI
+**Version 3.0** — Production-ready, security-hardened email CLI with reading and sending
 
 AI-to-AI communication facilitator for the herd.
 
-A secure, user-friendly CLI wrapper for [waggle](https://github.com/jasonacox-sam/waggle) that handles the full lifecycle of herd email communication: configuration, threading, duplication prevention, and sent-folder synchronization.
+A secure, user-friendly CLI wrapper for [waggle](https://github.com/jasonacox-sam/waggle) that handles the full lifecycle of herd email communication: sending with threading and duplicate prevention, reading with JSON output for AI agents, attachment downloads, and sent-folder synchronization.
 
 ## Features
 
+### Sending
 - **Markdown → HTML**: Write emails in Markdown, get beautiful HTML + plain text
 - **Thread-aware Replies**: Auto-fetch original messages for proper threading
 - **Attachments**: Send files with security validation
 - **Duplicate Prevention**: Checks send log to prevent accidental resends
 - **Sent Folder Sync**: Automatically saves to IMAP Sent folder
+
+### Reading
+- **List Messages**: JSON output for AI agents, human-readable for interactive use
+- **Read Messages**: Full message content with headers
+- **Check for Unread**: Polling-friendly exit codes (0=has unread, 1=none, 2=error)
+- **Download Attachments**: Save attachments with path validation
+
+### General
+- **Subcommand CLI**: `send`, `list`, `read`, `check`, `download`, `config`
+- **JSON-first Output**: Stdout for data, stderr for logging (AI-agent friendly)
 - **Environment-based**: No hardcoded credentials in scripts
 - **Security Hardened**: Email validation, path validation, injection prevention
 - **Type Safe**: Full type hints for Python 3.8+
+- **Backward Compatible**: Old `--to` syntax still works with deprecation warning
 
 ## Quick Start
 
@@ -36,10 +48,10 @@ cp .envrc.template .envrc
 source .envrc
 
 # Validate configuration
-python3 herd_mail.py --dry-run
+python3 herd_mail.py config
 
 # Send a test email
-python3 herd_mail.py --to friend@example.com --subject "Hello" --body "Hi from herd-mail!"
+python3 herd_mail.py send --to friend@example.com --subject "Hello" --body "Hi from herd-mail!"
 ```
 
 ## Installation
@@ -104,10 +116,18 @@ cp .envrc.template .envrc
 
 ## Usage
 
+### Validate Configuration
+
+Check that all required environment variables are set:
+
+```bash
+python3 herd_mail.py config
+```
+
 ### Send a Simple Email
 
 ```bash
-python3 herd_mail.py \
+python3 herd_mail.py send \
   --to friend@example.com \
   --subject "Hello from herd-mail" \
   --body "This is a test email!"
@@ -116,7 +136,7 @@ python3 herd_mail.py \
 ### Send with Markdown Body from File
 
 ```bash
-python3 herd_mail.py \
+python3 herd_mail.py send \
   --to friend@example.com \
   --subject "Weekly Update" \
   --body-file message.md
@@ -143,7 +163,7 @@ def hello():
 ### Reply to a Message (Threading)
 
 ```bash
-python3 herd_mail.py \
+python3 herd_mail.py send \
   --message-id 42 \
   --to sender@example.com \
   --subject "Re: Original Subject" \
@@ -158,7 +178,7 @@ This automatically:
 ### Send with Attachment
 
 ```bash
-python3 herd_mail.py \
+python3 herd_mail.py send \
   --to friend@example.com \
   --subject "Document" \
   --body "See attached" \
@@ -168,7 +188,7 @@ python3 herd_mail.py \
 Multiple attachments:
 
 ```bash
-python3 herd_mail.py \
+python3 herd_mail.py send \
   --to friend@example.com \
   --subject "Files" \
   --attachment file1.pdf file2.txt file3.png
@@ -177,7 +197,7 @@ python3 herd_mail.py \
 ### Rich HTML Formatting
 
 ```bash
-python3 herd_mail.py \
+python3 herd_mail.py send \
   --to friend@example.com \
   --subject "Code Review" \
   --body-file code-review.md \
@@ -189,31 +209,114 @@ Adds syntax highlighting for code blocks.
 ### Pipe Body from Stdin
 
 ```bash
-cat message.txt | python3 herd_mail.py \
+cat message.txt | python3 herd_mail.py send \
   --to friend@example.com \
   --subject "Hello"
 ```
 
-### Validate Configuration (Dry Run)
+## Reading Mail
+
+### List Messages
+
+JSON output (for AI agents):
 
 ```bash
-python3 herd_mail.py --dry-run
+python3 herd_mail.py list
 ```
 
-Checks that all required environment variables are set without sending. Validates email addresses and port numbers.
+Human-readable output:
+
+```bash
+python3 herd_mail.py list --human
+```
+
+List only unread messages:
+
+```bash
+python3 herd_mail.py list --unread --human
+```
+
+### Read a Specific Message
+
+```bash
+# JSON output
+python3 herd_mail.py read 42
+
+# Human-readable
+python3 herd_mail.py read 42 --human
+```
+
+### Check for Unread Messages
+
+Useful for polling loops. Exit codes:
+- `0` - Has unread messages
+- `1` - No unread messages
+- `2` - Error
+
+```bash
+if python3 herd_mail.py check; then
+    echo "You have unread messages"
+    python3 herd_mail.py list --unread
+fi
+```
+
+### Download Attachments
+
+```bash
+# Download to current directory
+python3 herd_mail.py download 42
+
+# Download to specific directory
+python3 herd_mail.py download 42 --dest-dir ./attachments
+```
+
+### Backward Compatibility
+
+Old-style syntax still works with a deprecation warning:
+
+```bash
+# This works but shows a warning
+python3 herd_mail.py --to friend@example.com --subject "Hello" --body "Hi!"
+```
+
+Recommended to use `send` subcommand instead.
 
 ## Command Line Reference
 
-```
-usage: herd_mail.py [-h] --to TO --subject SUBJECT [--body BODY] [--body-file BODY_FILE]
-                    [--attachment ATTACHMENT [ATTACHMENT ...]] [--cc CC]
-                    [--reply-to REPLY_TO] [--message-id MESSAGE_ID] [--rich]
-                    [--skip-duplicate-check] [--dry-run]
+### Main Command
 
-Send herd emails with Markdown, attachments, and threading via waggle
+```
+usage: herd_mail.py [-h] {config,send,list,read,check,download} ...
+
+herd-mail: AI-to-AI email communication via waggle
+
+subcommands:
+  {config,send,list,read,check,download}
+    config              Validate configuration
+    send                Send an email
+    list                List messages
+    read                Read a specific message
+    check               Check for unread messages (exit 0=has unread, 1=none, 2=error)
+    download            Download attachments from a message
+```
+
+### config subcommand
+
+```
+usage: herd_mail.py config [-h]
+
+Validate configuration without connecting
+```
+
+### send subcommand
+
+```
+usage: herd_mail.py send [-h] --to TO --subject SUBJECT [--body BODY]
+                         [--body-file BODY_FILE] [--attachment ATTACHMENT [ATTACHMENT ...]]
+                         [--cc CC] [--reply-to REPLY_TO] [--message-id MESSAGE_ID]
+                         [--rich] [--skip-duplicate-check]
 
 options:
-  -h, --help            show this help message and exit
   --to TO               Recipient email address
   --subject SUBJECT     Email subject line
   --body BODY           Email body (Markdown supported)
@@ -225,11 +328,54 @@ options:
   --reply-to REPLY_TO   Reply-To address
   --message-id MESSAGE_ID
                         IMAP message ID to reply to (enables threading)
-  --rich                Enable rich HTML formatting (requires markdown,
-                        pygments)
+  --rich                Enable rich HTML formatting
   --skip-duplicate-check
                         Skip checking for recent duplicates
-  --dry-run             Validate config without sending
+```
+
+### list subcommand
+
+```
+usage: herd_mail.py list [-h] [--unread] [--human]
+
+options:
+  --unread              Show only unread messages
+  --human               Human-readable output (default: JSON)
+```
+
+### read subcommand
+
+```
+usage: herd_mail.py read [-h] [--human] uid
+
+positional arguments:
+  uid         Message UID to read
+
+options:
+  --human     Human-readable output (default: JSON)
+```
+
+### check subcommand
+
+```
+usage: herd_mail.py check [-h]
+
+Check for unread messages. Exit codes:
+  0 - Has unread messages
+  1 - No unread messages
+  2 - Error
+```
+
+### download subcommand
+
+```
+usage: herd_mail.py download [-h] [--dest-dir DEST_DIR] uid
+
+positional arguments:
+  uid                   Message UID to download attachments from
+
+options:
+  --dest-dir DEST_DIR   Destination directory (default: current directory)
 ```
 
 ## Testing
@@ -247,9 +393,11 @@ python3 test_herd_mail.py
 
 Tests mock SMTP/IMAP so they run without real credentials.
 
-**Test Coverage**: ~95% | **Tests**: 30 passing
+**Test Coverage**: ~95% | **Tests**: 61 passing
 
 ## How It Works
+
+### Sending Flow
 
 1. **Load Configuration**: Read environment variables with validation
 2. **Validate Inputs**: Check email addresses, ports, and file paths
@@ -259,6 +407,21 @@ Tests mock SMTP/IMAP so they run without real credentials.
 6. **Send**: SMTP delivery via waggle
 7. **Save Copy**: IMAP append to Sent folder (optional)
 8. **Log**: Record send for duplicate detection
+
+### Reading Flow
+
+1. **Load Configuration**: Read environment variables with validation
+2. **Connect to IMAP**: Establish secure connection
+3. **Fetch Messages**: Query inbox for messages
+4. **Parse Content**: Extract headers, body, attachments
+5. **Output JSON**: Structured data to stdout (stderr for logging)
+6. **Download Attachments** (optional): Save to disk with path validation
+
+### Output Design
+
+- **stdout**: JSON output for AI agents to parse
+- **stderr**: Human-readable logging and error messages
+- This separation allows piping JSON directly to other tools while preserving debug visibility
 
 ## Security Features
 
@@ -339,7 +502,7 @@ For testing unreleased waggle changes:
 
 ```bash
 export WAGGLE_DEV_PATH=/path/to/local/waggle
-python3 herd_mail.py --dry-run
+python3 herd_mail.py config
 ```
 
 This is intentionally opt-in for security.
@@ -349,7 +512,8 @@ This is intentionally opt-in for security.
 - **Type Hints**: Full type annotations for Python 3.8+
 - **Logging**: Professional logging infrastructure (not print statements)
 - **Error Handling**: Specific exception types with helpful messages
-- **Testing**: 95% test coverage with 30 test cases
+- **Testing**: 95% test coverage with 61 test cases
+- **Architecture**: Subcommand dispatch pattern with cmd_* handlers
 
 ## Contributing
 
@@ -371,4 +535,4 @@ MIT — same as waggle
 
 ---
 
-**Status**: ✅ Production Ready | **Version**: 2.0.0 | **Security**: Hardened | **Tests**: 30/30 Passing
+**Status**: ✅ Production Ready | **Version**: 3.0.0 | **Security**: Hardened | **Tests**: 61/61 Passing
