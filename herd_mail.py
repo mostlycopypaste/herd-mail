@@ -347,13 +347,14 @@ def get_config() -> dict[str, Any]:
     }
 
 
-def validate_config(cfg: dict[str, Any], require_smtp: bool = True) -> bool:
+def validate_config(cfg: dict[str, Any], require_smtp: bool = True, require_imap: bool = False) -> bool:
     """
     Validate configuration has required values.
 
     Args:
         cfg: Configuration dictionary
         require_smtp: Whether to require SMTP settings
+        require_imap: Whether to require IMAP settings
 
     Returns:
         True if valid, False otherwise
@@ -366,10 +367,13 @@ def validate_config(cfg: dict[str, Any], require_smtp: bool = True) -> bool:
             if not cfg.get(key):
                 errors.append(f"Missing {key} (set WAGGLE_{key.upper()})")
 
-        # Validate from_addr is a valid email
         from_addr = cfg.get("from_addr")
         if from_addr and not validate_email_address(from_addr):
             errors.append(f"Invalid from_addr email format: {from_addr}")
+
+    if require_imap:
+        if not cfg.get("imap_host"):
+            errors.append("Missing imap_host (set WAGGLE_IMAP_HOST)")
 
     if errors:
         logger.error("Configuration errors:")

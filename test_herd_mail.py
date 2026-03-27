@@ -249,6 +249,30 @@ class TestConfig(unittest.TestCase):
         result = hm.validate_config(cfg)
         self.assertTrue(result)
 
+    def test_validate_config_require_imap_missing(self):
+        """Test validation fails when IMAP required but missing."""
+        cfg = {
+            "smtp_host": "smtp.example.com",
+            "smtp_user": "user@example.com",
+            "smtp_pass": "secret",
+            "from_addr": "user@example.com",
+            "imap_host": None,
+        }
+        result = hm.validate_config(cfg, require_smtp=False, require_imap=True)
+        self.assertFalse(result)
+
+    def test_validate_config_require_imap_present(self):
+        """Test validation passes when IMAP required and present."""
+        cfg = {
+            "smtp_host": "smtp.example.com",
+            "smtp_user": "user@example.com",
+            "smtp_pass": "secret",
+            "from_addr": "user@example.com",
+            "imap_host": "imap.example.com",
+        }
+        result = hm.validate_config(cfg, require_smtp=False, require_imap=True)
+        self.assertTrue(result)
+
 
 class TestWaggleConfig(unittest.TestCase):
     """Test conversion to waggle's config format."""
