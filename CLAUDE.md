@@ -65,7 +65,7 @@ python3 test_herd_mail.py
 
 Tests mock SMTP/IMAP so they run without real credentials.
 
-**Test Coverage**: ~95% | **Tests**: 61 passing
+**Test Coverage**: ~95% | **Tests**: 69 passing
 
 ### Dependencies
 ```bash
@@ -114,7 +114,7 @@ Version 3.0 uses a subcommand-based CLI with dedicated handlers:
 4. **Message Building** - Convert Markdown to multipart (HTML + plain text)
 5. **Thread Handling** - If replying, fetch original via IMAP for headers
 6. **Send** - SMTP delivery via waggle's `send_email()`
-7. **IMAP Sync** - Save copy to Sent folder (if IMAP configured)
+7. **Sent Folder Sync** - herd-mail appends plain text copy to IMAP Sent folder (if configured)
 8. **Logging** - Record send for duplicate detection
 
 ### Core Flow (Read)

@@ -13,7 +13,7 @@ A secure, user-friendly CLI wrapper for [waggle](https://github.com/jasonacox-sa
 - **Thread-aware Replies**: Auto-fetch original messages for proper threading
 - **Attachments**: Send files with security validation
 - **Duplicate Prevention**: Checks send log to prevent accidental resends
-- **Sent Folder Sync**: Automatically saves to IMAP Sent folder
+- **Sent Folder Sync**: Saves plain text copy to IMAP Sent folder (when IMAP configured)
 
 ### Reading
 - **List Messages**: JSON output for AI agents, human-readable for interactive use
@@ -393,7 +393,7 @@ python3 test_herd_mail.py
 
 Tests mock SMTP/IMAP so they run without real credentials.
 
-**Test Coverage**: ~95% | **Tests**: 61 passing
+**Test Coverage**: ~95% | **Tests**: 69 passing
 
 ## How It Works
 
@@ -405,7 +405,7 @@ Tests mock SMTP/IMAP so they run without real credentials.
 4. **Build Message**: Convert Markdown to HTML + plain text
 5. **Fetch Original**: If replying, get threading headers from IMAP
 6. **Send**: SMTP delivery via waggle
-7. **Save Copy**: IMAP append to Sent folder (optional)
+7. **Sent Folder Sync**: herd-mail appends plain text copy to IMAP Sent folder (if `WAGGLE_IMAP_HOST` configured; tries `Sent`, `Sent Items`, `INBOX.Sent`; failure is non-fatal)
 8. **Log**: Record send for duplicate detection
 
 ### Reading Flow
@@ -471,9 +471,13 @@ Port numbers must be between 1 and 65535. Common values:
 
 ### Emails not appearing in Sent folder
 
+The Sent folder sync feature saves a plain text copy (no attachments) to your IMAP Sent folder when configured:
+
 - Set `WAGGLE_IMAP_HOST` in your `.envrc`
-- Ensure IMAP credentials are correct
-- Common folder names tried: `"Sent Items"`, `"Sent"`, `"INBOX.Sent"`
+- Ensure IMAP credentials match your SMTP credentials (same user/pass)
+- Folder names tried in order: `Sent`, `Sent Items`, `INBOX.Sent`
+- Sync failures are non-fatal - email is still sent, but copy won't appear in Sent folder
+- Check logs for warnings if sync is silently failing
 
 ### Duplicate detection not working
 
@@ -512,7 +516,7 @@ This is intentionally opt-in for security.
 - **Type Hints**: Full type annotations for Python 3.8+
 - **Logging**: Professional logging infrastructure (not print statements)
 - **Error Handling**: Specific exception types with helpful messages
-- **Testing**: 95% test coverage with 61 test cases
+- **Testing**: 95% test coverage with 69 test cases
 - **Architecture**: Subcommand dispatch pattern with cmd_* handlers
 
 ## Contributing
@@ -535,4 +539,4 @@ MIT — same as waggle
 
 ---
 
-**Status**: ✅ Production Ready | **Version**: 3.0.0 | **Security**: Hardened | **Tests**: 61/61 Passing
+**Status**: ✅ Production Ready | **Version**: 3.0.0 | **Security**: Hardened | **Tests**: 69/69 Passing
