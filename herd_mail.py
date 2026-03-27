@@ -660,6 +660,32 @@ def cmd_list(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_read(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the read subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    try:
+        message = read_message(
+            args.uid,
+            folder=args.folder,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to read message {args.uid}: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error reading message: {e}")
+        return 1
+
+    if args.human:
+        output_human_read(message)
+    else:
+        output_json(message)
+
+    return 0
+
+
 def main() -> int:
     """Main entry point with subcommand dispatch."""
     if not WAGGLE_AVAILABLE:
@@ -741,6 +767,7 @@ def main() -> int:
     commands = {
         "send": cmd_send,
         "list": cmd_list,
+        "read": cmd_read,
         "config": cmd_config,
     }
 
