@@ -686,6 +686,43 @@ def cmd_read(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_check(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """
+    Handle the check subcommand.
+
+    Exit codes: 0=has unread, 1=no unread, 2=error.
+    """
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 2
+
+    try:
+        messages = list_inbox(
+            folder=args.folder,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to check messages: {e}")
+        return 2
+    except Exception as e:
+        logger.error(f"Unexpected error checking messages: {e}")
+        return 2
+
+    unread = [m for m in messages if m.get("unread")]
+
+    data = {
+        "folder": args.folder,
+        "unread_count": len(unread),
+        "messages": unread,
+    }
+
+    if args.human:
+        output_human_check(data)
+    else:
+        output_json(data)
+
+    return 0 if unread else 1
+
+
 def main() -> int:
     """Main entry point with subcommand dispatch."""
     if not WAGGLE_AVAILABLE:
@@ -768,6 +805,7 @@ def main() -> int:
         "send": cmd_send,
         "list": cmd_list,
         "read": cmd_read,
+        "check": cmd_check,
         "config": cmd_config,
     }
 

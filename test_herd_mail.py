@@ -856,6 +856,89 @@ class TestCmdRead(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+class TestCmdCheck(unittest.TestCase):
+    """Test check subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.list_inbox')
+    def test_check_has_unread(self, mock_list):
+        """Test check returns 0 when unread messages exist."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "a@example.com", "from_name": "A",
+             "subject": "New", "date": "Mon", "flags": "",
+             "unread": True, "size": 100},
+            {"uid": "2", "from_addr": "b@example.com", "from_name": "B",
+             "subject": "Read", "date": "Tue", "flags": "\\Seen",
+             "unread": False, "size": 200},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'check']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["unread_count"], 1)
+
+    @patch('herd_mail.list_inbox')
+    def test_check_no_unread(self, mock_list):
+        """Test check returns 1 when no unread messages."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "a@example.com", "from_name": "A",
+             "subject": "Read", "date": "Mon", "flags": "\\Seen",
+             "unread": False, "size": 100},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'check']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 1)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["unread_count"], 0)
+
+    @patch('herd_mail.list_inbox')
+    def test_check_connection_error(self, mock_list):
+        """Test check returns 2 on error."""
+        mock_list.side_effect = ConnectionError("Connection refused")
+        with patch('sys.argv', ['herd_mail.py', 'check']):
+            result = hm.main()
+        self.assertEqual(result, 2)
+
+    @patch('herd_mail.list_inbox')
+    def test_check_human_output(self, mock_list):
+        """Test check with --human flag."""
+        mock_list.return_value = [
+            {"uid": "1", "unread": True, "from_addr": "a@example.com",
+             "from_name": "A", "subject": "New", "date": "Mon",
+             "flags": "", "size": 100},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'check', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn("1", output)
+        self.assertIn("unread", output)
+
+
 class TestWaggleStubs(unittest.TestCase):
     """Test that waggle function stubs exist for mocking."""
 
