@@ -332,9 +332,10 @@ class TestMain(unittest.TestCase):
         os.environ["WAGGLE_PASS"] = "secret"
         os.environ["WAGGLE_FROM"] = "user@example.com"
 
+    @patch('herd_mail.save_to_sent')
     @patch('herd_mail.send_email')
     @patch('herd_mail.check_recently_sent')
-    def test_send_simple_email(self, mock_check_duplicate, mock_send):
+    def test_send_simple_email(self, mock_check_duplicate, mock_send, mock_save):
         """Test sending a simple email."""
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
@@ -361,9 +362,10 @@ class TestMain(unittest.TestCase):
 
         self.assertEqual(result, 0)  # Not an error, just skipped
 
+    @patch('herd_mail.save_to_sent')
     @patch('herd_mail.send_email')
     @patch('herd_mail.check_recently_sent')
-    def test_skip_duplicate_check(self, mock_check_duplicate, mock_send):
+    def test_skip_duplicate_check(self, mock_check_duplicate, mock_send, mock_save):
         """Test --skip-duplicate-check bypasses detection."""
         mock_send.return_value = None
 
@@ -412,9 +414,10 @@ class TestMain(unittest.TestCase):
 
         self.assertEqual(result, 1)
 
+    @patch('herd_mail.save_to_sent')
     @patch('herd_mail.send_email')
     @patch('herd_mail.check_recently_sent')
-    def test_with_attachments(self, mock_check_duplicate, mock_send):
+    def test_with_attachments(self, mock_check_duplicate, mock_send, mock_save):
         """Test sending with attachments."""
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
@@ -428,9 +431,10 @@ class TestMain(unittest.TestCase):
         call_kwargs = mock_send.call_args[1]
         self.assertEqual(call_kwargs['attachments'], ['file1.pdf', 'file2.txt'])
 
+    @patch('herd_mail.save_to_sent')
     @patch('herd_mail.send_email')
     @patch('herd_mail.check_recently_sent')
-    def test_escape_sequences_in_body(self, mock_check_duplicate, mock_send):
+    def test_escape_sequences_in_body(self, mock_check_duplicate, mock_send, mock_save):
         """Test escape sequences in body are decoded."""
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
@@ -466,9 +470,10 @@ class TestBodyLoading(unittest.TestCase):
             if key.startswith("WAGGLE_"):
                 del os.environ[key]
 
+    @patch('herd_mail.save_to_sent')
     @patch('herd_mail.send_email')
     @patch('herd_mail.check_recently_sent')
-    def test_body_from_file(self, mock_check_duplicate, mock_send):
+    def test_body_from_file(self, mock_check_duplicate, mock_send, mock_save):
         """Test reading body from file."""
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
@@ -489,9 +494,10 @@ class TestBodyLoading(unittest.TestCase):
         finally:
             os.unlink(temp_path)
 
+    @patch('herd_mail.save_to_sent')
     @patch('herd_mail.send_email')
     @patch('herd_mail.check_recently_sent')
-    def test_body_from_stdin(self, mock_check_duplicate, mock_send):
+    def test_body_from_stdin(self, mock_check_duplicate, mock_send, mock_save):
         """Test reading body from stdin."""
         mock_check_duplicate.return_value = False
         mock_send.return_value = None
@@ -660,9 +666,10 @@ class TestBackwardCompat(unittest.TestCase):
             if key.startswith("WAGGLE_"):
                 del os.environ[key]
 
+    @patch('herd_mail.save_to_sent')
     @patch('herd_mail.send_email')
     @patch('herd_mail.check_recently_sent')
-    def test_old_style_send(self, mock_check, mock_send):
+    def test_old_style_send(self, mock_check, mock_send, mock_save):
         """Test old-style --to without subcommand still works."""
         mock_check.return_value = False
         mock_send.return_value = None
@@ -1139,6 +1146,63 @@ class TestSaveToSent(unittest.TestCase):
         self.assertFalse(result)
         mock_conn.append.assert_not_called()
         mock_conn.logout.assert_called_once()
+
+
+class TestSendWithSentSync(unittest.TestCase):
+    """Test cmd_send integration with save_to_sent."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.save_to_sent')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_save_called_with_imap(self, mock_check, mock_send, mock_save):
+        """Test save_to_sent is called when IMAP is configured."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+        mock_save.return_value = True
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
+                                '--subject', 'Hello', '--body', 'Hi!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        mock_save.assert_called_once()
+        call_kwargs = mock_save.call_args
+        self.assertEqual(call_kwargs[0][1], "friend@example.com")  # to
+        self.assertEqual(call_kwargs[0][2], "Hello")  # subject
+
+    @patch('herd_mail.save_to_sent')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_save_not_called_without_imap(self, mock_check, mock_send, mock_save):
+        """Test save_to_sent is NOT called when IMAP is not configured."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
+                                '--subject', 'Hello', '--body', 'Hi!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        mock_save.assert_not_called()
 
 
 class TestWaggleStubs(unittest.TestCase):

@@ -659,9 +659,19 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
             config=build_waggle_config(cfg),
         )
 
-        logger.info("Email sent successfully!")
+        saved = False
         if cfg.get("imap_host"):
+            saved = save_to_sent(
+                cfg, args.to, args.subject, body,
+                cc=args.cc, reply_to=args.reply_to,
+                in_reply_to=in_reply_to, references=references,
+            )
+
+        logger.info("Email sent successfully!")
+        if saved:
             logger.info("  (Saved to Sent folder via IMAP)")
+        elif cfg.get("imap_host"):
+            logger.warning("  (Could not save to Sent folder)")
 
         return 0
 
