@@ -1,0 +1,25 @@
+# send-email-waggle Environment Configuration
+# Copy this file to .envrc and fill in real values
+# Then run: direnv allow .
+
+# SMTP Configuration (required)
+export WAGGLE_HOST=email-smtp.us-east-1.amazonaws.com
+export WAGGLE_PORT=465
+export WAGGLE_USER=YOUR_SMTP_USER
+export WAGGLE_PASS='YOUR_SMTP_PASS'
+export WAGGLE_FROM=you@example.com
+export WAGGLE_NAME="Your Name"
+
+# TLS Settings
+export WAGGLE_TLS=true
+
+# IMAP Configuration (optional - for Sent folder saving)
+export WAGGLE_IMAP_HOST=imap.mail.us-east-1.awsapps.com
+export WAGGLE_IMAP_PORT=993
+export WAGGLE_IMAP_TLS=true
+
+# Default recipient for testing
+export WAGGLE_TO=test@example.com
+
+# Send log path (for duplicate detection)
+export WAGGLE_SEND_LOG=$HOME/.local/share/waggle-sent.log
