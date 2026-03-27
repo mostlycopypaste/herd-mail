@@ -1032,14 +1032,12 @@ def run_basic_tests():
     print("Running basic validation tests...")
     print("=" * 60)
 
-    # Test 1: Email validation
     print("\n1. Testing email validation...")
     assert hm.validate_email_address("user@example.com") == True
     assert hm.validate_email_address("invalid") == False
     assert hm.validate_email_address("user\n@example.com") == False
-    print("   ✓ Email validation works")
+    print("   Pass")
 
-    # Test 2: Port parsing
     print("\n2. Testing port parsing...")
     assert hm.parse_port("465", 0, "test") == 465
     try:
@@ -1047,21 +1045,18 @@ def run_basic_tests():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
-    print("   ✓ Port parsing works")
+    print("   Pass")
 
-    # Test 3: Escape sequences
     print("\n3. Testing escape sequences...")
     assert hm.decode_escape_sequences("hello\\nworld") == "hello\nworld"
     assert hm.decode_escape_sequences("hello\\\\world") == "hello\\world"
-    print("   ✓ Escape sequence handling works")
+    print("   Pass")
 
-    # Test 4: Sanitization
     print("\n4. Testing sanitization...")
     assert hm.sanitize_for_display("hello\x1b[31mworld") == "helloworld"
     assert hm.sanitize_for_display("hello\nworld") == "hello\nworld"
-    print("   ✓ Sanitization works")
+    print("   Pass")
 
-    # Test 5: Config loading
     print("\n5. Testing config loading...")
     os.environ["WAGGLE_HOST"] = "smtp.example.com"
     os.environ["WAGGLE_USER"] = "user@example.com"
@@ -1071,29 +1066,30 @@ def run_basic_tests():
     cfg = hm.get_config()
     assert cfg["smtp_host"] == "smtp.example.com"
     assert cfg["smtp_port"] == 465
-    print("   ✓ Config loads correctly")
+    print("   Pass")
 
-    # Test 6: Config validation
-    print("\n6. Testing config validation...")
-    assert hm.validate_config(cfg) == True
-    print("   ✓ Valid config passes")
+    print("\n6. Testing IMAP validation...")
+    assert hm.validate_config(cfg, require_smtp=False, require_imap=True) == False
+    cfg["imap_host"] = "imap.example.com"
+    assert hm.validate_config(cfg, require_smtp=False, require_imap=True) == True
+    print("   Pass")
 
-    incomplete = {"smtp_host": "", "smtp_user": "user", "smtp_pass": "pass", "from_addr": "user"}
-    assert hm.validate_config(incomplete) == False
-    print("   ✓ Invalid config fails correctly")
-
-    # Test 7: Waggle config conversion
-    print("\n7. Testing waggle config conversion...")
-    waggle_cfg = hm.build_waggle_config(cfg)
-    assert waggle_cfg["host"] == "smtp.example.com"
-    assert "imap_host" in waggle_cfg
-    print("   ✓ Config converts to waggle format")
+    print("\n7. Testing output helpers...")
+    import json
+    from io import StringIO
+    data = {"folder": "INBOX", "count": 0, "messages": []}
+    captured = StringIO()
+    import sys as _sys
+    old_stdout = _sys.stdout
+    _sys.stdout = captured
+    hm.output_json(data)
+    _sys.stdout = old_stdout
+    assert json.loads(captured.getvalue())["count"] == 0
+    print("   Pass")
 
     print("\n" + "=" * 60)
-    print("All basic tests passed! ✓")
-    print("\nFor full test suite, install pytest and run:")
-    print("  pip install pytest")
-    print("  python3 -m pytest test_herd_mail.py -v")
+    print("All basic tests passed!")
+    print("\nFor full test suite: python3 -m pytest test_herd_mail.py -v")
 
 
 if __name__ == "__main__":

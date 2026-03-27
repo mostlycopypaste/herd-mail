@@ -3,43 +3,27 @@
 herd-mail: AI-to-AI communication facilitator for the herd.
 
 A secure, user-friendly wrapper for waggle that handles the full lifecycle
-of herd email communication: configuration, threading, duplication prevention,
-and sent-folder synchronization.
+of herd email communication: sending, reading, checking, and downloading.
 
-Features:
-- Markdown to HTML conversion with optional rich formatting
-- Thread-aware replies (fetches original for quoting)
-- Attachment support with security validation
-- Duplicate prevention (checks send log)
-- Automatic Sent folder saving via IMAP
-- Environment-based configuration (no hardcoded credentials)
+Commands:
+    herd_mail.py send --to recipient@example.com --subject "Hello" --body "Message"
+    herd_mail.py list [--folder INBOX] [--limit 20] [--unread] [--human]
+    herd_mail.py read <uid> [--folder INBOX] [--human]
+    herd_mail.py check [--folder INBOX] [--human]
+    herd_mail.py download <uid> [--folder INBOX] [--dest-dir .]
+    herd_mail.py config
 
-Usage:
-    # Send simple email
-    python3 herd_mail.py --to recipient@example.com --subject "Hello" --body "Message"
-
-    # Send with body from file
-    python3 herd_mail.py --to recipient@example.com --subject "Hello" --body-file message.md
-
-    # Reply to a message (auto-fetches original for threading)
-    python3 herd_mail.py --message-id 42 --to sender@example.com --subject "Re: Hello"
-
-    # With attachment
-    python3 herd_mail.py --to recipient@example.com --body "See attached" --attachment file.pdf
-
-    # Rich HTML formatting (requires markdown + pygments)
-    python3 herd_mail.py --to recipient@example.com --body-file message.md --rich
-
-Environment Variables (all optional, see .envrc.template):
+Environment Variables (see .envrc.template):
     WAGGLE_HOST         SMTP host
     WAGGLE_PORT         SMTP port (default: 465)
-    WAGGLE_USER         SMTP username
-    WAGGLE_PASS         SMTP password
+    WAGGLE_USER         SMTP/IMAP username
+    WAGGLE_PASS         SMTP/IMAP password
     WAGGLE_FROM         From email address
     WAGGLE_NAME         Display name
     WAGGLE_TLS          Use TLS (default: true)
-    WAGGLE_IMAP_HOST    IMAP host (for Sent folder)
+    WAGGLE_IMAP_HOST    IMAP host (required for list/read/check/download)
     WAGGLE_IMAP_PORT    IMAP port (default: 993)
+    WAGGLE_IMAP_TLS     Use IMAP TLS (default: true)
     WAGGLE_TO           Default test recipient
     WAGGLE_SEND_LOG     Path to send log (for duplicate detection)
     WAGGLE_DEV_PATH     Optional: Path to local waggle for development
