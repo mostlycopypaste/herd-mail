@@ -723,6 +723,43 @@ def cmd_check(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0 if unread else 1
 
 
+def cmd_download(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the download subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    # Ensure dest_dir exists
+    dest_dir = Path(args.dest_dir)
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Cannot create destination directory: {e}")
+        return 1
+
+    try:
+        files = download_attachments(
+            args.uid,
+            folder=args.folder,
+            dest_dir=str(dest_dir),
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to download attachments: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error downloading attachments: {e}")
+        return 1
+
+    data = {
+        "uid": args.uid,
+        "folder": args.folder,
+        "files": files,
+    }
+
+    output_json(data)
+    return 0
+
+
 def main() -> int:
     """Main entry point with subcommand dispatch."""
     if not WAGGLE_AVAILABLE:
@@ -806,6 +843,7 @@ def main() -> int:
         "list": cmd_list,
         "read": cmd_read,
         "check": cmd_check,
+        "download": cmd_download,
         "config": cmd_config,
     }
 
@@ -813,8 +851,7 @@ def main() -> int:
     if handler:
         return handler(args, cfg)
 
-    # Placeholder for read-side commands (implemented in later tasks)
-    logger.error(f"Command '{args.command}' not yet implemented")
+    logger.error(f"Unknown command: {args.command}")
     return 1
 
 

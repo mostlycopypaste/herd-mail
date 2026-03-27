@@ -939,6 +939,82 @@ class TestCmdCheck(unittest.TestCase):
         self.assertIn("unread", output)
 
 
+class TestCmdDownload(unittest.TestCase):
+    """Test download subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.download_attachments')
+    def test_download_files(self, mock_dl):
+        """Test download returns file paths as JSON."""
+        mock_dl.return_value = ["/tmp/report.pdf", "/tmp/data.csv"]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["uid"], "42")
+        self.assertEqual(len(data["files"]), 2)
+
+    @patch('herd_mail.download_attachments')
+    def test_download_no_attachments(self, mock_dl):
+        """Test download with no attachments returns empty list."""
+        mock_dl.return_value = []
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["files"], [])
+
+    @patch('herd_mail.download_attachments')
+    def test_download_with_dest_dir(self, mock_dl):
+        """Test download with --dest-dir."""
+        mock_dl.return_value = ["/custom/dir/file.pdf"]
+        captured = StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('sys.argv', ['herd_mail.py', 'download', '42', '--dest-dir', tmpdir]):
+                with patch('sys.stdout', captured):
+                    result = hm.main()
+        self.assertEqual(result, 0)
+        mock_dl.assert_called_once()
+        self.assertTrue(tmpdir in str(mock_dl.call_args))
+
+    @patch('herd_mail.download_attachments')
+    def test_download_connection_error(self, mock_dl):
+        """Test download handles connection errors."""
+        mock_dl.side_effect = ConnectionError("Connection refused")
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+    def test_download_no_imap(self):
+        """Test download fails without IMAP config."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'download', '42']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
 class TestWaggleStubs(unittest.TestCase):
     """Test that waggle function stubs exist for mocking."""
 
