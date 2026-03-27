@@ -33,12 +33,14 @@ License: MIT
 """
 
 import argparse
+import imaplib
 import json
 import logging
 import os
 import re
 import sys
-from email.utils import parseaddr
+from email.message import EmailMessage
+from email.utils import formatdate, parseaddr
 from pathlib import Path
 from typing import Any, Optional
 
@@ -49,6 +51,7 @@ DEFAULT_DUPLICATE_CHECK_MINUTES = 5
 DEFAULT_IMAP_FOLDER = "INBOX"
 DEFAULT_NO_BODY_MESSAGE = "(No message body)"
 DEFAULT_LIST_LIMIT = 20
+SENT_FOLDER_CANDIDATES = ["Sent", "Sent Items", "INBOX.Sent"]
 
 # Logging setup
 logging.basicConfig(
@@ -393,6 +396,97 @@ def build_waggle_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "imap_port": cfg.get("imap_port", DEFAULT_IMAP_PORT),
         "imap_tls": cfg.get("imap_tls", True),
     }
+
+
+def save_to_sent(
+    cfg: dict[str, Any],
+    to: str,
+    subject: str,
+    body: str,
+    cc: Optional[str] = None,
+    reply_to: Optional[str] = None,
+    in_reply_to: Optional[str] = None,
+    references: Optional[str] = None,
+) -> bool:
+    """
+    Save a copy of the sent message to the IMAP Sent folder.
+
+    Returns True if saved, False on any failure. Failures are non-fatal.
+    """
+    wcfg = build_waggle_config(cfg)
+
+    # Build RFC822 message
+    msg = EmailMessage()
+    from_display = f"{wcfg['from_name']} <{wcfg['from_addr']}>" if wcfg.get("from_name") else wcfg["from_addr"]
+    msg["From"] = from_display
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    if cc:
+        msg["Cc"] = cc
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
+    msg.set_content(body)
+
+    msg_bytes = msg.as_bytes()
+
+    try:
+        # Connect to IMAP
+        if wcfg.get("imap_tls", True):
+            conn = imaplib.IMAP4_SSL(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
+        else:
+            conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
+
+        try:
+            conn.login(wcfg["user"], wcfg["password"])
+
+            # Find the Sent folder
+            status, folder_data = conn.list()
+            folder_names = []
+            if status == "OK" and folder_data:
+                for item in folder_data:
+                    if isinstance(item, bytes):
+                        decoded = item.decode("utf-8", errors="replace")
+                        # Extract folder name from IMAP LIST response
+                        # Format: (flags) "delimiter" "name"
+                        parts = decoded.rsplit('"', 2)
+                        if len(parts) >= 2:
+                            folder_names.append(parts[-2])
+
+            sent_folder = None
+            for candidate in SENT_FOLDER_CANDIDATES:
+                if candidate in folder_names:
+                    sent_folder = candidate
+                    break
+
+            if not sent_folder:
+                logger.warning(f"No Sent folder found (tried: {', '.join(SENT_FOLDER_CANDIDATES)})")
+                return False
+
+            # Append message
+            status, _ = conn.append(f'"{sent_folder}"', "\\Seen", None, msg_bytes)
+            if status != "OK":
+                logger.warning(f"IMAP APPEND failed: {status}")
+                return False
+
+            return True
+
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
+    except (OSError, imaplib.IMAP4.error) as e:
+        logger.warning(f"Could not save to Sent folder: {e}")
+        return False
+    except Exception as e:
+        logger.warning(f"Unexpected error saving to Sent folder: {e}")
+        return False
 
 
 def output_json(data: dict[str, Any]) -> None:

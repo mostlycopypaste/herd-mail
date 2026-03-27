@@ -1015,6 +1015,132 @@ class TestCmdDownload(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+class TestSaveToSent(unittest.TestCase):
+    """Test IMAP Sent folder sync."""
+
+    def _make_cfg(self):
+        return {
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 465,
+            "smtp_user": "user@example.com",
+            "smtp_pass": "secret",
+            "from_addr": "user@example.com",
+            "from_name": "Test User",
+            "use_tls": True,
+            "imap_host": "imap.example.com",
+            "imap_port": 993,
+            "imap_tls": True,
+        }
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_save_successful(self, mock_imap_cls):
+        """Test successful save to Sent folder."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.list.return_value = ('OK', [b'(\\HasNoChildren) "/" "Sent"'])
+        mock_conn.append.return_value = ('OK', [b'APPEND completed'])
+
+        result = hm.save_to_sent(
+            self._make_cfg(), "friend@example.com", "Hello", "Hi there!",
+        )
+
+        self.assertTrue(result)
+        mock_conn.login.assert_called_once_with("user@example.com", "secret")
+        mock_conn.append.assert_called_once()
+        call_args = mock_conn.append.call_args[0]
+        self.assertEqual(call_args[0], '"Sent"')
+        mock_conn.logout.assert_called_once()
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_save_connection_failure(self, mock_imap_cls):
+        """Test save returns False on connection failure."""
+        mock_imap_cls.side_effect = OSError("Connection refused")
+
+        result = hm.save_to_sent(
+            self._make_cfg(), "friend@example.com", "Hello", "Hi!",
+        )
+
+        self.assertFalse(result)
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_save_folder_fallback(self, mock_imap_cls):
+        """Test fallback to 'Sent Items' when 'Sent' not found."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.list.return_value = ('OK', [b'(\\HasNoChildren) "/" "Sent Items"'])
+        mock_conn.append.return_value = ('OK', [b'APPEND completed'])
+
+        result = hm.save_to_sent(
+            self._make_cfg(), "friend@example.com", "Hello", "Hi!",
+        )
+
+        self.assertTrue(result)
+        call_args = mock_conn.append.call_args[0]
+        self.assertEqual(call_args[0], '"Sent Items"')
+
+    @patch('herd_mail.imaplib.IMAP4')
+    def test_save_non_tls(self, mock_imap_cls):
+        """Test non-TLS IMAP connection."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.list.return_value = ('OK', [b'(\\HasNoChildren) "/" "Sent"'])
+        mock_conn.append.return_value = ('OK', [b'APPEND completed'])
+
+        cfg = self._make_cfg()
+        cfg["imap_tls"] = False
+
+        result = hm.save_to_sent(cfg, "friend@example.com", "Hello", "Hi!")
+
+        self.assertTrue(result)
+        mock_imap_cls.assert_called_once_with("imap.example.com", 993)
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_save_message_headers(self, mock_imap_cls):
+        """Test RFC822 message has correct headers."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.list.return_value = ('OK', [b'(\\HasNoChildren) "/" "Sent"'])
+        mock_conn.append.return_value = ('OK', [b'APPEND completed'])
+
+        hm.save_to_sent(
+            self._make_cfg(), "friend@example.com", "Hello", "Hi there!",
+            cc="other@example.com", reply_to="reply@example.com",
+            in_reply_to="<orig@example.com>", references="<ref@example.com>",
+        )
+
+        call_args = mock_conn.append.call_args[0]
+        msg_bytes = call_args[3]  # fourth positional arg is the message bytes
+        msg_str = msg_bytes.decode('utf-8') if isinstance(msg_bytes, bytes) else msg_bytes
+        self.assertIn("From: Test User <user@example.com>", msg_str)
+        self.assertIn("To: friend@example.com", msg_str)
+        self.assertIn("Subject: Hello", msg_str)
+        self.assertIn("Cc: other@example.com", msg_str)
+        self.assertIn("Reply-To: reply@example.com", msg_str)
+        self.assertIn("In-Reply-To: <orig@example.com>", msg_str)
+        self.assertIn("References: <ref@example.com>", msg_str)
+        self.assertIn("Hi there!", msg_str)
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_save_no_matching_folder(self, mock_imap_cls):
+        """Test returns False when no Sent folder found."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.list.return_value = ('OK', [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "Drafts"'])
+
+        result = hm.save_to_sent(
+            self._make_cfg(), "friend@example.com", "Hello", "Hi!",
+        )
+
+        self.assertFalse(result)
+        mock_conn.append.assert_not_called()
+        mock_conn.logout.assert_called_once()
+
+
 class TestWaggleStubs(unittest.TestCase):
     """Test that waggle function stubs exist for mocking."""
 
