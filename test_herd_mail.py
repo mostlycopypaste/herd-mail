@@ -8,6 +8,7 @@ Or: python3 test_herd_mail.py (for basic validation)
 These tests mock SMTP/IMAP so they run without real credentials.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -514,6 +515,91 @@ class TestBodyLoading(unittest.TestCase):
             result = hm.main()
 
         self.assertEqual(result, 1)
+
+
+class TestOutput(unittest.TestCase):
+    """Test output formatting helpers."""
+
+    def test_output_json(self):
+        """Test JSON output goes to stdout."""
+        data = {"folder": "INBOX", "count": 1, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_json(data)
+        result = json.loads(captured.getvalue())
+        self.assertEqual(result["folder"], "INBOX")
+        self.assertEqual(result["count"], 1)
+
+    def test_output_human_list_with_messages(self):
+        """Test human-readable list output."""
+        data = {
+            "folder": "INBOX",
+            "count": 1,
+            "messages": [{
+                "uid": "42",
+                "from_addr": "alice@example.com",
+                "from_name": "Alice",
+                "subject": "Hello",
+                "date": "Mon, 24 Mar 2026 10:00:00 -0400",
+                "unread": True,
+                "size": 1024,
+            }]
+        }
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_list(data)
+        output = captured.getvalue()
+        self.assertIn("alice@example.com", output)
+        self.assertIn("Hello", output)
+
+    def test_output_human_list_empty(self):
+        """Test human-readable list output with no messages."""
+        data = {"folder": "INBOX", "count": 0, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_list(data)
+        output = captured.getvalue()
+        self.assertIn("No messages", output)
+
+    def test_output_human_read(self):
+        """Test human-readable read output."""
+        data = {
+            "uid": "42",
+            "folder": "INBOX",
+            "from_addr": "alice@example.com",
+            "from_name": "Alice",
+            "subject": "Hello",
+            "date": "Mon, 24 Mar 2026",
+            "to": "bob@example.com",
+            "body_plain": "Hi Bob!",
+            "body_html": None,
+            "attachments": [],
+        }
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_read(data)
+        output = captured.getvalue()
+        self.assertIn("From: Alice <alice@example.com>", output)
+        self.assertIn("Hi Bob!", output)
+
+    def test_output_human_check_with_unread(self):
+        """Test human-readable check output with unread messages."""
+        data = {"folder": "INBOX", "unread_count": 3, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_check(data)
+        output = captured.getvalue()
+        self.assertIn("3", output)
+        self.assertIn("unread", output)
+
+    def test_output_human_check_none_unread(self):
+        """Test human-readable check output with no unread messages."""
+        data = {"folder": "INBOX", "unread_count": 0, "messages": []}
+        captured = StringIO()
+        with patch('sys.stdout', captured):
+            hm.output_human_check(data)
+        output = captured.getvalue()
+        self.assertIn("No unread", output)
 
 
 class TestWaggleStubs(unittest.TestCase):

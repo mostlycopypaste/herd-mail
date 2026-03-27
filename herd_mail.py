@@ -49,6 +49,7 @@ License: MIT
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -63,6 +64,7 @@ DEFAULT_IMAP_PORT = 993
 DEFAULT_DUPLICATE_CHECK_MINUTES = 5
 DEFAULT_IMAP_FOLDER = "INBOX"
 DEFAULT_NO_BODY_MESSAGE = "(No message body)"
+DEFAULT_LIST_LIMIT = 20
 
 # Logging setup
 logging.basicConfig(
@@ -407,6 +409,65 @@ def build_waggle_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "imap_port": cfg.get("imap_port", DEFAULT_IMAP_PORT),
         "imap_tls": cfg.get("imap_tls", True),
     }
+
+
+def output_json(data: dict[str, Any]) -> None:
+    """Write JSON to stdout. All logging must go to stderr."""
+    print(json.dumps(data, indent=2, default=str))
+
+
+def output_human_list(data: dict[str, Any]) -> None:
+    """Write human-readable message list to stdout."""
+    messages = data.get("messages", [])
+    if not messages:
+        print(f"No messages in {data['folder']}.")
+        return
+
+    print(f"{'UID':<8} {'From':<30} {'Subject':<40} {'Date':<20} {'Status'}")
+    print("-" * 110)
+    for msg in messages:
+        status = "*" if msg.get("unread") else " "
+        from_name = msg.get("from_name", "")
+        from_addr = msg.get("from_addr", "")
+        # Show name if available, otherwise email; prefer showing the email for clarity
+        from_display = f"{from_name} ({from_addr})" if from_name and from_addr else (from_name or from_addr or "")
+        subject = msg.get("subject", "(no subject)")
+        from_display = from_display[:28] if len(from_display) > 28 else from_display
+        subject = subject[:38] if len(subject) > 38 else subject
+        date = msg.get("date", "")[:18]
+        print(f"{msg['uid']:<8} {from_display:<30} {subject:<40} {date:<20} {status}")
+
+
+def output_human_read(data: dict[str, Any]) -> None:
+    """Write human-readable message to stdout."""
+    from_name = data.get("from_name", "")
+    from_addr = data.get("from_addr", "")
+    from_display = f"{from_name} <{from_addr}>" if from_name else from_addr
+
+    print(f"From: {from_display}")
+    print(f"To: {data.get('to', '')}")
+    print(f"Date: {data.get('date', '')}")
+    print(f"Subject: {data.get('subject', '')}")
+
+    attachments = data.get("attachments", [])
+    if attachments:
+        names = ", ".join(a.get("filename", "unknown") for a in attachments)
+        print(f"Attachments: {names}")
+
+    print("-" * 60)
+
+    body = data.get("body_plain") or data.get("body_html") or "(no body)"
+    print(body)
+
+
+def output_human_check(data: dict[str, Any]) -> None:
+    """Write human-readable check result to stdout."""
+    count = data.get("unread_count", 0)
+    folder = data.get("folder", "INBOX")
+    if count == 0:
+        print(f"No unread messages in {folder}.")
+    else:
+        print(f"{count} unread message(s) in {folder}.")
 
 
 def main() -> int:
