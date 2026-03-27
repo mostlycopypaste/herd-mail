@@ -681,6 +681,101 @@ class TestBackwardCompat(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+class TestCmdList(unittest.TestCase):
+    """Test list subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.list_inbox')
+    def test_list_json_output(self, mock_list):
+        """Test list outputs JSON to stdout."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "alice@example.com", "from_name": "Alice",
+             "subject": "Hello", "date": "Mon, 24 Mar 2026", "flags": "",
+             "unread": True, "size": 1024},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["messages"][0]["from_addr"], "alice@example.com")
+
+    @patch('herd_mail.list_inbox')
+    def test_list_unread_filter(self, mock_list):
+        """Test --unread filters to unread only."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "a@example.com", "from_name": "A",
+             "subject": "Read", "date": "Mon", "flags": "\\Seen",
+             "unread": False, "size": 100},
+            {"uid": "2", "from_addr": "b@example.com", "from_name": "B",
+             "subject": "Unread", "date": "Tue", "flags": "",
+             "unread": True, "size": 200},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list', '--unread']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["messages"][0]["uid"], "2")
+
+    @patch('herd_mail.list_inbox')
+    def test_list_empty(self, mock_list):
+        """Test list with empty inbox."""
+        mock_list.return_value = []
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 0)
+
+    @patch('herd_mail.list_inbox')
+    def test_list_human_output(self, mock_list):
+        """Test list with --human flag."""
+        mock_list.return_value = [
+            {"uid": "1", "from_addr": "alice@example.com", "from_name": "Alice",
+             "subject": "Hello", "date": "Mon, 24 Mar 2026", "flags": "",
+             "unread": True, "size": 1024},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'list', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn("alice@example.com", output)
+
+    def test_list_no_imap(self):
+        """Test list fails without IMAP config."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'list']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
 class TestWaggleStubs(unittest.TestCase):
     """Test that waggle function stubs exist for mocking."""
 

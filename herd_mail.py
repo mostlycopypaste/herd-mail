@@ -625,6 +625,41 @@ def cmd_config(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0 if smtp_valid else 1
 
 
+def cmd_list(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the list subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    try:
+        messages = list_inbox(
+            folder=args.folder,
+            limit=args.limit,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError) as e:
+        logger.error(f"Failed to list messages: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error listing messages: {e}")
+        return 1
+
+    if args.unread:
+        messages = [m for m in messages if m.get("unread")]
+
+    data = {
+        "folder": args.folder,
+        "count": len(messages),
+        "messages": messages,
+    }
+
+    if args.human:
+        output_human_list(data)
+    else:
+        output_json(data)
+
+    return 0
+
+
 def main() -> int:
     """Main entry point with subcommand dispatch."""
     if not WAGGLE_AVAILABLE:
@@ -705,6 +740,7 @@ def main() -> int:
     # Dispatch to command handler
     commands = {
         "send": cmd_send,
+        "list": cmd_list,
         "config": cmd_config,
     }
 
