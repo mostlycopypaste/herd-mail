@@ -142,14 +142,12 @@ The wrapper adds:
 
 ### Local Development Path
 
-Lines 56-58 in `herd_mail.py` add local waggle dev path if present:
-```python
-LOCAL_WAGGLE = Path("/Volumes/RayCue-Drive/Documents/openclaw/.openclaw/workspace/projects/waggle")
-if LOCAL_WAGGLE.exists():
-    sys.path.insert(0, str(LOCAL_WAGGLE))
+Set the `WAGGLE_DEV_PATH` environment variable to use a local waggle checkout:
+```bash
+export WAGGLE_DEV_PATH=/path/to/local/waggle
 ```
 
-This allows testing unreleased waggle changes. Remove or adjust this path if it causes issues.
+This is intentionally opt-in for security — no hardcoded paths.
 
 ## Code Patterns
 

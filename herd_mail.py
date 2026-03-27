@@ -456,6 +456,10 @@ def output_human_check(data: dict[str, Any]) -> None:
 
 def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     """Handle the send subcommand."""
+    # Handle --dry-run as alias for config command (before email validation)
+    if args.dry_run:
+        return cmd_config(args, cfg)
+
     # Validate email addresses early
     if not validate_email_address(args.to):
         logger.error(f"Invalid recipient email address: {sanitize_for_display(args.to)}")
@@ -468,10 +472,6 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if args.reply_to and not validate_email_address(args.reply_to):
         logger.error(f"Invalid Reply-To email address: {sanitize_for_display(args.reply_to)}")
         return 1
-
-    # Handle --dry-run as alias for config command
-    if args.dry_run:
-        return cmd_config(args, cfg)
 
     # Validate SMTP configuration
     if not validate_config(cfg, require_smtp=True):
@@ -753,13 +753,15 @@ def main() -> int:
         return 1
 
     # Backward compat: detect old-style invocation (no subcommand, but --to present)
-    if len(sys.argv) > 1 and sys.argv[1].startswith('--'):
-        if '--to' in sys.argv:
+    # Work on a copy to avoid mutating the global sys.argv
+    argv = sys.argv[:]
+    if len(argv) > 1 and argv[1].startswith('--'):
+        if '--to' in argv:
             logger.warning("Deprecation warning: use 'herd_mail.py send --to ...' instead")
-            sys.argv.insert(1, 'send')
-        elif '--dry-run' in sys.argv:
+            argv.insert(1, 'send')
+        elif '--dry-run' in argv:
             logger.warning("Deprecation warning: use 'herd_mail.py config' instead")
-            sys.argv.insert(1, 'send')
+            argv.insert(1, 'send')
 
     parser = argparse.ArgumentParser(
         description="herd-mail: AI-to-AI email communication via waggle",
@@ -808,7 +810,7 @@ def main() -> int:
     # config subcommand
     subparsers.add_parser("config", help="Validate configuration")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv[1:])
 
     if not args.command:
         parser.print_help()
