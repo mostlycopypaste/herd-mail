@@ -17,12 +17,18 @@ A secure, user-friendly CLI wrapper for [waggle](https://github.com/jasonacox-sa
 
 ### Reading
 - **List Messages**: JSON output for AI agents, human-readable for interactive use
-- **Read Messages**: Full message content with headers
+- **Read Messages**: Full message content with headers, auto-marks as read
 - **Check for Unread**: Polling-friendly exit codes (0=has unread, 1=none, 2=error)
 - **Download Attachments**: Save attachments with path validation
 
+### Flag & Move
+- **Flag Management**: Add/remove `\Seen`, `\Answered`, `\Flagged` on messages
+- **Bulk Operations**: Comma-separated UIDs for batch flagging
+- **Move Messages**: Move between IMAP folders (archive, triage, etc.)
+- **Auto-Flagging**: `read` marks `\Seen`; `send --message-id` marks `\Seen`+`\Answered`
+
 ### General
-- **Subcommand CLI**: `send`, `list`, `read`, `check`, `download`, `config`
+- **Subcommand CLI**: `send`, `list`, `read`, `check`, `download`, `flag`, `move`, `config`
 - **JSON-first Output**: Stdout for data, stderr for logging (AI-agent friendly)
 - **Environment-based**: No hardcoded credentials in scripts
 - **Security Hardened**: Email validation, path validation, injection prevention
@@ -270,6 +276,31 @@ python3 herd_mail.py download 42
 python3 herd_mail.py download 42 --dest-dir ./attachments
 ```
 
+### Manage Flags
+
+```bash
+# Mark a message as read
+python3 herd_mail.py flag add 42 '\Seen'
+
+# Mark multiple messages as read and answered
+python3 herd_mail.py flag add 630,631,632 '\Seen' '\Answered'
+
+# Remove a flag
+python3 herd_mail.py flag remove 42 '\Flagged'
+```
+
+Allowed flags: `\Seen`, `\Answered`, `\Flagged`.
+
+### Move Messages
+
+```bash
+# Move to archive
+python3 herd_mail.py move 42 INBOX.Archive
+
+# Move from a specific source folder
+python3 herd_mail.py move 42 INBOX.Processed --folder INBOX.Review
+```
+
 ### Backward Compatibility
 
 Old-style syntax still works with a deprecation warning:
@@ -286,18 +317,20 @@ Recommended to use `send` subcommand instead.
 ### Main Command
 
 ```
-usage: herd_mail.py [-h] {config,send,list,read,check,download} ...
+usage: herd_mail.py [-h] {config,send,list,read,check,download,flag,move} ...
 
 herd-mail: AI-to-AI email communication via waggle
 
 subcommands:
-  {config,send,list,read,check,download}
+  {config,send,list,read,check,download,flag,move}
     config              Validate configuration
     send                Send an email
     list                List messages
-    read                Read a specific message
+    read                Read a specific message (auto-marks as read)
     check               Check for unread messages (exit 0=has unread, 1=none, 2=error)
     download            Download attachments from a message
+    flag                Add or remove IMAP flags on messages
+    move                Move a message to another folder
 ```
 
 ### config subcommand
@@ -346,14 +379,17 @@ options:
 ### read subcommand
 
 ```
-usage: herd_mail.py read [-h] [--human] uid
+usage: herd_mail.py read [-h] [--human] [--no-mark-read] uid
 
 positional arguments:
-  uid         Message UID to read
+  uid              Message UID to read
 
 options:
-  --human     Human-readable output (default: JSON)
+  --human          Human-readable output (default: JSON)
+  --no-mark-read   Don't mark message as read after displaying
 ```
+
+Reading a message automatically marks it as `\Seen`. Use `--no-mark-read` to prevent this.
 
 ### check subcommand
 
@@ -378,6 +414,37 @@ options:
   --dest-dir DEST_DIR   Destination directory (default: current directory)
 ```
 
+### flag subcommand
+
+```
+usage: herd_mail.py flag [-h] [--folder FOLDER] [--human] {add,remove} uids flags [flags ...]
+
+positional arguments:
+  {add,remove}     Flag operation
+  uids             Message UID(s), comma-separated for bulk
+  flags            Flags: \Seen \Answered \Flagged
+
+options:
+  --folder FOLDER  IMAP folder (default: INBOX)
+  --human          Human-readable output
+```
+
+Only `\Seen`, `\Answered`, and `\Flagged` are allowed. `\Deleted` is blocked for safety.
+
+### move subcommand
+
+```
+usage: herd_mail.py move [-h] [--folder FOLDER] [--human] uid dest_folder
+
+positional arguments:
+  uid              Message UID
+  dest_folder      Destination IMAP folder
+
+options:
+  --folder FOLDER  Source folder (default: INBOX)
+  --human          Human-readable output
+```
+
 ## Testing
 
 Run the comprehensive test suite:
@@ -393,7 +460,7 @@ python3 test_herd_mail.py
 
 Tests mock SMTP/IMAP so they run without real credentials.
 
-**Test Coverage**: ~95% | **Tests**: 69 passing
+**Test Coverage**: ~95% | **Tests**: 97 passing
 
 ## How It Works
 
@@ -406,7 +473,8 @@ Tests mock SMTP/IMAP so they run without real credentials.
 5. **Fetch Original**: If replying, get threading headers from IMAP
 6. **Send**: SMTP delivery via waggle
 7. **Sent Folder Sync**: herd-mail appends plain text copy to IMAP Sent folder (if `WAGGLE_IMAP_HOST` configured; tries `Sent`, `Sent Items`, `INBOX.Sent`; failure is non-fatal)
-8. **Log**: Record send for duplicate detection
+8. **Auto-Flag Original**: If replying (`--message-id`), marks original as `\Seen`+`\Answered` (non-fatal)
+9. **Log**: Record send for duplicate detection
 
 ### Reading Flow
 
@@ -415,13 +483,235 @@ Tests mock SMTP/IMAP so they run without real credentials.
 3. **Fetch Messages**: Query inbox for messages
 4. **Parse Content**: Extract headers, body, attachments
 5. **Output JSON**: Structured data to stdout (stderr for logging)
-6. **Download Attachments** (optional): Save to disk with path validation
+6. **Auto-Mark Read**: Sets `\Seen` flag (unless `--no-mark-read`)
+7. **Download Attachments** (optional): Save to disk with path validation
 
 ### Output Design
 
 - **stdout**: JSON output for AI agents to parse
 - **stderr**: Human-readable logging and error messages
 - This separation allows piping JSON directly to other tools while preserving debug visibility
+
+## AI Agent Integration
+
+herd-mail is designed for AI-to-AI email communication. All data commands output structured JSON to stdout, with logging on stderr. This section documents workflows, JSON schemas, and exit codes for programmatic use.
+
+### Exit Codes
+
+| Command | Code 0 | Code 1 | Code 2 |
+|---------|--------|--------|--------|
+| `send` | Sent successfully | Error (config, validation, SMTP) | — |
+| `list` | Listed successfully | Error (config, IMAP) | — |
+| `read` | Read successfully | Error (config, IMAP) | — |
+| `check` | Has unread messages | No unread messages | Error |
+| `download` | Downloaded | Error | — |
+| `flag` | Flags updated | Error (config, IMAP, invalid flag) | — |
+| `move` | Moved | Error | — |
+| `config` | Config valid | Config invalid | — |
+
+### JSON Output Schemas
+
+#### `list` output
+```json
+{
+  "folder": "INBOX",
+  "count": 2,
+  "messages": [
+    {
+      "uid": "635",
+      "message_id": "<abc123@example.com>",
+      "from_addr": "alice@example.com",
+      "from_name": "Alice",
+      "from_raw": "Alice <alice@example.com>",
+      "subject": "Project update",
+      "date": "Tue, 01 Apr 2026 10:30:00 +0000",
+      "flags": "\\Seen",
+      "size": 2048,
+      "unread": false
+    }
+  ]
+}
+```
+
+#### `read` output
+```json
+{
+  "uid": "635",
+  "folder": "INBOX",
+  "message_id": "<abc123@example.com>",
+  "from_addr": "alice@example.com",
+  "from_name": "Alice",
+  "to": "bob@example.com",
+  "subject": "Project update",
+  "date": "Tue, 01 Apr 2026 10:30:00 +0000",
+  "body_plain": "Hi Bob, here's the update...",
+  "body_html": "<html>...</html>",
+  "in_reply_to": null,
+  "references": null,
+  "attachments": [
+    {"filename": "report.pdf", "content_type": "application/pdf", "size": 45000}
+  ]
+}
+```
+
+Key fields for threading: `message_id`, `in_reply_to`, `references`. Use `uid` for all subsequent operations (read, flag, move, reply).
+
+#### `check` output
+```json
+{
+  "folder": "INBOX",
+  "unread_count": 3,
+  "messages": [
+    {"uid": "640", "from_addr": "alice@example.com", "subject": "Need response", "unread": true}
+  ]
+}
+```
+
+#### `flag` output
+```json
+{
+  "uids": ["635", "636"],
+  "flags": ["\\Seen", "\\Answered"],
+  "action": "add",
+  "folder": "INBOX",
+  "results": [
+    {"uid": "635", "status": "ok"},
+    {"uid": "636", "status": "ok"}
+  ]
+}
+```
+
+### Recommended Workflows
+
+#### Polling Loop (check for new mail)
+```bash
+# Poll for unread messages — exit code 0 means unread exist
+if python3 herd_mail.py check; then
+    # Fetch the unread message list as JSON
+    MESSAGES=$(python3 herd_mail.py list --unread)
+    # Process each UID...
+fi
+```
+
+#### Read and Process
+```bash
+# Read message — automatically marks as \Seen
+MESSAGE=$(python3 herd_mail.py read 635)
+
+# Parse with jq
+BODY=$(echo "$MESSAGE" | jq -r '.body_plain')
+FROM=$(echo "$MESSAGE" | jq -r '.from_addr')
+SUBJECT=$(echo "$MESSAGE" | jq -r '.subject')
+
+# If you need to read without marking as read (e.g., peeking)
+MESSAGE=$(python3 herd_mail.py read 635 --no-mark-read)
+```
+
+#### Reply to a Message
+```bash
+# Reply — auto-sets threading headers AND marks original as \Seen + \Answered
+python3 herd_mail.py send \
+  --message-id 635 \
+  --to alice@example.com \
+  --subject "Re: Project update" \
+  --body "Thanks for the update, Alice!"
+```
+
+The `--message-id` flag:
+1. Fetches the original message to extract `In-Reply-To` and `References` headers
+2. Sends the reply with proper threading
+3. Saves a copy to the Sent folder (if IMAP configured)
+4. Marks the original message as `\Seen` + `\Answered`
+
+#### Triage Workflow (read, decide, act)
+```bash
+# Read the message
+MESSAGE=$(python3 herd_mail.py read 640)
+
+# Agent decides: needs reply, archive, or flag for later
+# Option A: Reply (auto-flags \Seen + \Answered)
+python3 herd_mail.py send --message-id 640 --to ... --subject "Re: ..." --body "..."
+
+# Option B: Archive without replying
+python3 herd_mail.py flag add 640 '\Seen'
+python3 herd_mail.py move 640 INBOX.Archive
+
+# Option C: Flag for follow-up
+python3 herd_mail.py flag add 640 '\Seen' '\Flagged'
+```
+
+#### Bulk Processing
+```bash
+# Mark multiple messages as read in one call
+python3 herd_mail.py flag add 630,631,632,633 '\Seen'
+
+# Process attachments
+python3 herd_mail.py download 635 --dest-dir ./attachments
+FILES=$(python3 herd_mail.py download 635 --dest-dir ./attachments | jq -r '.files[]')
+```
+
+#### Complete Agent Loop
+```bash
+#!/bin/bash
+# Full agent email processing loop
+
+# 1. Check for new mail
+if ! python3 herd_mail.py check 2>/dev/null; then
+    exit 0  # No unread messages
+fi
+
+# 2. Get unread messages
+UNREAD=$(python3 herd_mail.py list --unread 2>/dev/null)
+UIDS=$(echo "$UNREAD" | jq -r '.messages[].uid')
+
+# 3. Process each message
+for UID in $UIDS; do
+    # Read (auto-marks \Seen)
+    MSG=$(python3 herd_mail.py read "$UID" 2>/dev/null)
+
+    FROM=$(echo "$MSG" | jq -r '.from_addr')
+    SUBJECT=$(echo "$MSG" | jq -r '.subject')
+    BODY=$(echo "$MSG" | jq -r '.body_plain')
+
+    # Agent logic: compose a response
+    REPLY_BODY="Your agent-generated response here"
+
+    # Reply (auto-marks \Seen + \Answered on original)
+    python3 herd_mail.py send \
+        --message-id "$UID" \
+        --to "$FROM" \
+        --subject "Re: $SUBJECT" \
+        --body "$REPLY_BODY" 2>/dev/null
+
+    # Move to processed folder
+    python3 herd_mail.py move "$UID" INBOX.Processed 2>/dev/null
+done
+```
+
+### Flag Semantics
+
+| Flag | Meaning | When to Set |
+|------|---------|------------|
+| `\Seen` | Message has been read | Auto-set by `read`; set manually after processing |
+| `\Answered` | Message has been replied to | Auto-set by `send --message-id`; set manually after replying via other means |
+| `\Flagged` | Message is flagged/starred | Set manually for follow-up, priority, or needs-attention |
+
+### Automatic vs Manual Flagging
+
+| Action | What happens automatically | What you do manually |
+|--------|--------------------------|---------------------|
+| `read <uid>` | Sets `\Seen` | Nothing (or `--no-mark-read` to skip) |
+| `send --message-id <uid>` | Sets `\Seen` + `\Answered` on original | Nothing |
+| `send --to ...` (new email) | Nothing on inbox | Flag/move as needed |
+| Processing CC'd mail | Nothing beyond `\Seen` from read | `flag add <uid> '\Seen'` then `move` to archive |
+| Flagging for follow-up | Nothing | `flag add <uid> '\Flagged'` |
+
+### Error Handling for Agents
+
+- **stdout** is always valid JSON on success (exit code 0). Parse it directly.
+- **stderr** contains log messages. Redirect to a log file: `2>>/var/log/herd-mail.log`
+- **Auto-flag failures are non-fatal**: If `read` succeeds but marking `\Seen` fails, you still get exit code 0 and the message JSON. A warning appears on stderr.
+- **Duplicate detection**: `send` with a recently-sent identical (to, subject) returns exit code 0 (not an error, just skipped). Check stderr for "Duplicate detected" if you need to distinguish.
 
 ## Security Features
 
@@ -516,7 +806,7 @@ This is intentionally opt-in for security.
 - **Type Hints**: Full type annotations for Python 3.8+
 - **Logging**: Professional logging infrastructure (not print statements)
 - **Error Handling**: Specific exception types with helpful messages
-- **Testing**: 95% test coverage with 69 test cases
+- **Testing**: 95% test coverage with 97 test cases
 - **Architecture**: Subcommand dispatch pattern with cmd_* handlers
 
 ## Contributing
@@ -534,9 +824,8 @@ MIT — same as waggle
 ## See Also
 
 - [waggle](https://github.com/jasonacox-sam/waggle-mail) — The underlying email library
-- [Himalaya](https://github.com/pimalaya/himalaya) — IMAP/SMTP CLI (alternative)
 - [direnv](https://direnv.net/) — Environment variable management
 
 ---
 
-**Status**: ✅ Production Ready | **Version**: 3.0.0 | **Security**: Hardened | **Tests**: 69/69 Passing
+**Status**: ✅ Production Ready | **Version**: 3.0.0 | **Security**: Hardened | **Tests**: 97/97 Passing
