@@ -1205,6 +1205,475 @@ class TestSendWithSentSync(unittest.TestCase):
         mock_save.assert_not_called()
 
 
+class TestValidateImapFlags(unittest.TestCase):
+    """Test IMAP flag validation and normalization."""
+
+    def test_valid_flags(self):
+        """Standard flags are accepted."""
+        normalized, errors = hm.validate_imap_flags([r"\Seen", r"\Answered", r"\Flagged"])
+        self.assertEqual(errors, [])
+        self.assertEqual(normalized, [r"\Seen", r"\Answered", r"\Flagged"])
+
+    def test_case_insensitive(self):
+        """Flags are normalized case-insensitively."""
+        normalized, errors = hm.validate_imap_flags([r"\seen", r"\ANSWERED"])
+        self.assertEqual(errors, [])
+        self.assertEqual(normalized, [r"\Seen", r"\Answered"])
+
+    def test_without_backslash(self):
+        """Flags without leading backslash are normalized."""
+        normalized, errors = hm.validate_imap_flags(["Seen", "Flagged"])
+        self.assertEqual(errors, [])
+        self.assertEqual(normalized, [r"\Seen", r"\Flagged"])
+
+    def test_invalid_flag_rejected(self):
+        """Invalid flags produce errors."""
+        normalized, errors = hm.validate_imap_flags([r"\Deleted", r"\Draft", "bogus"])
+        self.assertEqual(len(errors), 3)
+        self.assertEqual(normalized, [])
+
+    def test_mixed_valid_invalid(self):
+        """Mix of valid and invalid flags."""
+        normalized, errors = hm.validate_imap_flags([r"\Seen", r"\Deleted"])
+        self.assertEqual(normalized, [r"\Seen"])
+        self.assertEqual(len(errors), 1)
+
+
+class TestImapStoreFlags(unittest.TestCase):
+    """Test imap_store_flags helper."""
+
+    def setUp(self):
+        self.cfg = {
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 465,
+            "smtp_user": "user@example.com",
+            "smtp_pass": "secret",
+            "from_addr": "user@example.com",
+            "from_name": "",
+            "use_tls": True,
+            "imap_host": "imap.example.com",
+            "imap_port": 993,
+            "imap_tls": True,
+        }
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_add_single_uid(self, mock_imap_cls):
+        """Test adding flags to a single UID."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.select.return_value = ('OK', [b'1'])
+        mock_conn.uid.return_value = ('OK', [b'42 (FLAGS (\\Seen))'])
+
+        result = hm.imap_store_flags(self.cfg, ["42"], [r"\Seen"], action="add")
+
+        mock_conn.uid.assert_called_once_with("STORE", b"42", "+FLAGS", r"(\Seen)")
+        self.assertEqual(result["action"], "add")
+        self.assertEqual(result["results"][0]["status"], "ok")
+        mock_conn.logout.assert_called_once()
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_remove_flags(self, mock_imap_cls):
+        """Test removing flags."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.select.return_value = ('OK', [b'1'])
+        mock_conn.uid.return_value = ('OK', [b'42 (FLAGS ())'])
+
+        result = hm.imap_store_flags(self.cfg, ["42"], [r"\Seen"], action="remove")
+
+        mock_conn.uid.assert_called_once_with("STORE", b"42", "-FLAGS", r"(\Seen)")
+        self.assertEqual(result["action"], "remove")
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_bulk_uids(self, mock_imap_cls):
+        """Test flagging multiple UIDs."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.select.return_value = ('OK', [b'1'])
+        mock_conn.uid.return_value = ('OK', [b'(FLAGS (\\Seen))'])
+
+        result = hm.imap_store_flags(self.cfg, ["10", "20", "30"], [r"\Seen"])
+
+        self.assertEqual(mock_conn.uid.call_count, 3)
+        self.assertEqual(len(result["results"]), 3)
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_multiple_flags(self, mock_imap_cls):
+        """Test setting multiple flags at once."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.select.return_value = ('OK', [b'1'])
+        mock_conn.uid.return_value = ('OK', [b'(FLAGS (\\Seen \\Answered))'])
+
+        hm.imap_store_flags(self.cfg, ["42"], [r"\Seen", r"\Answered"])
+
+        mock_conn.uid.assert_called_once_with("STORE", b"42", "+FLAGS", r"(\Seen \Answered)")
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_connection_failure(self, mock_imap_cls):
+        """Test connection failure raises."""
+        mock_imap_cls.side_effect = OSError("Connection refused")
+        with self.assertRaises(OSError):
+            hm.imap_store_flags(self.cfg, ["42"], [r"\Seen"])
+
+    @patch('herd_mail.imaplib.IMAP4')
+    def test_non_tls_connection(self, mock_imap_cls):
+        """Test non-TLS IMAP connection path."""
+        self.cfg["imap_tls"] = False
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.select.return_value = ('OK', [b'1'])
+        mock_conn.uid.return_value = ('OK', [b'(FLAGS (\\Seen))'])
+
+        hm.imap_store_flags(self.cfg, ["42"], [r"\Seen"])
+
+        mock_imap_cls.assert_called_once_with("imap.example.com", 993)
+
+    @patch('herd_mail.imaplib.IMAP4_SSL')
+    def test_select_failure(self, mock_imap_cls):
+        """Test folder select failure raises."""
+        mock_conn = MagicMock()
+        mock_imap_cls.return_value = mock_conn
+        mock_conn.login.return_value = ('OK', [b'Logged in'])
+        mock_conn.select.return_value = ('NO', [b'Folder not found'])
+
+        with self.assertRaises(RuntimeError):
+            hm.imap_store_flags(self.cfg, ["42"], [r"\Seen"])
+        mock_conn.logout.assert_called_once()
+
+
+class TestCmdFlag(unittest.TestCase):
+    """Test flag subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.imap_store_flags')
+    def test_flag_add_json(self, mock_store):
+        """Test flag add outputs JSON."""
+        mock_store.return_value = {
+            "uids": ["42"], "flags": [r"\Seen"], "action": "add",
+            "folder": "INBOX", "results": [{"uid": "42", "status": "ok"}],
+        }
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'flag', 'add', '42', r'\Seen']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["action"], "add")
+
+    @patch('herd_mail.imap_store_flags')
+    def test_flag_remove_human(self, mock_store):
+        """Test flag remove with --human output."""
+        mock_store.return_value = {
+            "uids": ["42"], "flags": [r"\Seen"], "action": "remove",
+            "folder": "INBOX", "results": [{"uid": "42", "status": "ok"}],
+        }
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'flag', 'remove', '42', r'\Seen', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        self.assertIn("-\\Seen", captured.getvalue())
+
+    @patch('herd_mail.imap_store_flags')
+    def test_flag_bulk_uids(self, mock_store):
+        """Test bulk UID flag operation."""
+        mock_store.return_value = {
+            "uids": ["10", "20", "30"], "flags": [r"\Seen"], "action": "add",
+            "folder": "INBOX", "results": [
+                {"uid": "10", "status": "ok"},
+                {"uid": "20", "status": "ok"},
+                {"uid": "30", "status": "ok"},
+            ],
+        }
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'flag', 'add', '10,20,30', r'\Seen']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        call_args = mock_store.call_args
+        self.assertEqual(call_args[1].get("uids") or call_args[0][1], ["10", "20", "30"])
+
+    def test_flag_invalid_flag(self):
+        """Test invalid flag returns exit code 1."""
+        with patch('sys.argv', ['herd_mail.py', 'flag', 'add', '42', r'\Deleted']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+    def test_flag_no_imap(self):
+        """Test flag without IMAP config returns 1."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'flag', 'add', '42', r'\Seen']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+    @patch('herd_mail.imap_store_flags')
+    def test_flag_connection_error(self, mock_store):
+        """Test flag handles connection errors."""
+        mock_store.side_effect = ConnectionError("Connection refused")
+        with patch('sys.argv', ['herd_mail.py', 'flag', 'add', '42', r'\Seen']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
+class TestCmdMove(unittest.TestCase):
+    """Test move subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.move_message')
+    def test_move_success(self, mock_move):
+        """Test successful move outputs JSON."""
+        mock_move.return_value = True
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'move', '42', 'INBOX.Archive']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["uid"], "42")
+        self.assertEqual(data["to_folder"], "INBOX.Archive")
+
+    @patch('herd_mail.move_message')
+    def test_move_human(self, mock_move):
+        """Test move with --human output."""
+        mock_move.return_value = True
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'move', '42', 'INBOX.Archive', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        self.assertIn("Moved UID 42", captured.getvalue())
+
+    @patch('herd_mail.move_message')
+    def test_move_failure(self, mock_move):
+        """Test move handles errors."""
+        mock_move.side_effect = RuntimeError("COPY failed")
+        with patch('sys.argv', ['herd_mail.py', 'move', '42', 'INBOX.Archive']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+    def test_move_no_imap(self):
+        """Test move fails without IMAP config."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'move', '42', 'INBOX.Archive']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
+class TestAutoFlagOnRead(unittest.TestCase):
+    r"""Test automatic \Seen marking in cmd_read."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.read_message')
+    def test_read_marks_seen(self, mock_read, mock_store):
+        """After reading, message is marked as \\Seen."""
+        mock_read.return_value = {
+            "uid": "42", "folder": "INBOX",
+            "from_addr": "a@example.com", "from_name": "A",
+            "subject": "Hi", "date": "Mon", "to": "b@example.com",
+            "body_plain": "Hello", "body_html": None, "attachments": [],
+        }
+        mock_store.return_value = {"results": [{"uid": "42", "status": "ok"}]}
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'read', '42']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        mock_store.assert_called_once()
+        call_args = mock_store.call_args
+        self.assertIn(r"\Seen", call_args[0][2])
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.read_message')
+    def test_no_mark_read_flag(self, mock_read, mock_store):
+        """--no-mark-read skips flagging."""
+        mock_read.return_value = {
+            "uid": "42", "folder": "INBOX",
+            "from_addr": "a@example.com", "from_name": "A",
+            "subject": "Hi", "date": "Mon", "to": "b@example.com",
+            "body_plain": "Hello", "body_html": None, "attachments": [],
+        }
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'read', '42', '--no-mark-read']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        mock_store.assert_not_called()
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.read_message')
+    def test_flag_failure_nonfatal(self, mock_read, mock_store):
+        """Flag failure doesn't affect read success."""
+        mock_read.return_value = {
+            "uid": "42", "folder": "INBOX",
+            "from_addr": "a@example.com", "from_name": "A",
+            "subject": "Hi", "date": "Mon", "to": "b@example.com",
+            "body_plain": "Hello", "body_html": None, "attachments": [],
+        }
+        mock_store.side_effect = OSError("Connection failed")
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'read', '42']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        # Message was still read and output
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["uid"], "42")
+
+
+class TestAutoFlagOnReply(unittest.TestCase):
+    """Test automatic flagging when replying via cmd_send."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.save_to_sent')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.read_message')
+    @patch('herd_mail.check_recently_sent')
+    def test_reply_marks_answered(self, mock_check, mock_read_msg, mock_send,
+                                   mock_save, mock_store):
+        """Reply marks original as \\Seen + \\Answered."""
+        mock_check.return_value = False
+        mock_read_msg.return_value = {
+            "message_id": "<orig@example.com>",
+            "reply_references": "<orig@example.com>",
+            "subject": "Original",
+        }
+        mock_send.return_value = None
+        mock_save.return_value = True
+        mock_store.return_value = {"results": [{"uid": "42", "status": "ok"}]}
+
+        with patch('sys.argv', ['herd_mail.py', 'send', '--message-id', '42',
+                                '--to', 'friend@example.com',
+                                '--subject', 'Re: Original', '--body', 'Thanks!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        mock_store.assert_called_once()
+        call_args = mock_store.call_args
+        flags = call_args[0][2]
+        self.assertIn(r"\Seen", flags)
+        self.assertIn(r"\Answered", flags)
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_non_reply_no_flag(self, mock_check, mock_send, mock_store):
+        """Non-reply send does not flag anything."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
+                                '--subject', 'Hello', '--body', 'Hi!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        mock_store.assert_not_called()
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.save_to_sent')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.read_message')
+    @patch('herd_mail.check_recently_sent')
+    def test_reply_flag_failure_nonfatal(self, mock_check, mock_read_msg,
+                                         mock_send, mock_save, mock_store):
+        """Flag failure doesn't affect send success."""
+        mock_check.return_value = False
+        mock_read_msg.return_value = {
+            "message_id": "<orig@example.com>",
+            "reply_references": "<orig@example.com>",
+            "subject": "Original",
+        }
+        mock_send.return_value = None
+        mock_save.return_value = True
+        mock_store.side_effect = OSError("IMAP error")
+
+        with patch('sys.argv', ['herd_mail.py', 'send', '--message-id', '42',
+                                '--to', 'friend@example.com',
+                                '--subject', 'Re: Original', '--body', 'Thanks!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+
+
 class TestWaggleStubs(unittest.TestCase):
     """Test that waggle function stubs exist for mocking."""
 
@@ -1215,6 +1684,7 @@ class TestWaggleStubs(unittest.TestCase):
         self.assertTrue(hasattr(hm, 'read_message'))
         self.assertTrue(hasattr(hm, 'list_inbox'))
         self.assertTrue(hasattr(hm, 'download_attachments'))
+        self.assertTrue(hasattr(hm, 'move_message'))
 
 
 def run_basic_tests():

@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import sys
 from email.message import EmailMessage
 from email.utils import formatdate, parseaddr
@@ -52,6 +53,7 @@ DEFAULT_IMAP_FOLDER = "INBOX"
 DEFAULT_NO_BODY_MESSAGE = "(No message body)"
 DEFAULT_LIST_LIMIT = 20
 SENT_FOLDER_CANDIDATES = ["Sent", "Sent Items", "INBOX.Sent"]
+ALLOWED_IMAP_FLAGS = {r"\Seen", r"\Answered", r"\Flagged"}
 
 # Logging setup
 logging.basicConfig(
@@ -79,7 +81,7 @@ WAGGLE_IMPORT_ERROR = None
 try:
     from waggle import (
         send_email, check_recently_sent, read_message,
-        list_inbox, download_attachments,
+        list_inbox, download_attachments, move_message,
     )
     WAGGLE_AVAILABLE = True
 except ImportError as e:
@@ -101,6 +103,9 @@ except ImportError as e:
         raise RuntimeError("waggle not installed")
 
     def download_attachments(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def move_message(*args, **kwargs):
         raise RuntimeError("waggle not installed")
 
 
@@ -160,6 +165,31 @@ def validate_email_list(emails: str) -> bool:
             return False
 
     return True
+
+
+def normalize_imap_flag(flag: str) -> Optional[str]:
+    """Normalize an IMAP flag string to canonical form, or return None if invalid."""
+    canonical = {f.lower(): f for f in ALLOWED_IMAP_FLAGS}
+    normalized = flag if flag.startswith("\\") else f"\\{flag}"
+    return canonical.get(normalized.lower())
+
+
+def validate_imap_flags(flags: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Validate and normalize IMAP flags against the whitelist.
+
+    Returns:
+        Tuple of (normalized_flags, errors). Empty errors means all valid.
+    """
+    normalized = []
+    errors = []
+    for flag in flags:
+        result = normalize_imap_flag(flag)
+        if result:
+            normalized.append(result)
+        else:
+            errors.append(f"Invalid flag: {flag} (allowed: {', '.join(sorted(ALLOWED_IMAP_FLAGS))})")
+    return normalized, errors
 
 
 def sanitize_for_display(text: str, max_length: int = 200) -> str:
@@ -489,6 +519,73 @@ def save_to_sent(
         return False
 
 
+def imap_store_flags(
+    cfg: dict[str, Any],
+    uids: list[str],
+    flags: list[str],
+    action: str = "add",
+    folder: str = DEFAULT_IMAP_FOLDER,
+) -> dict[str, Any]:
+    """
+    Set or remove IMAP flags on one or more messages.
+
+    Args:
+        cfg: herd-mail config dict (from get_config())
+        uids: List of IMAP UIDs as strings
+        flags: List of validated flag strings (e.g. [r"\\Seen", r"\\Answered"])
+        action: "add" or "remove"
+        folder: IMAP folder to operate on
+
+    Returns:
+        Result dict with per-UID outcomes.
+
+    Raises:
+        OSError, imaplib.IMAP4.error on connection failures.
+    """
+    wcfg = build_waggle_config(cfg)
+    store_cmd = "+FLAGS" if action == "add" else "-FLAGS"
+    flag_str = f"({' '.join(flags)})"
+
+    results = []
+    ctx = ssl.create_default_context()
+
+    if wcfg.get("imap_tls", True):
+        conn = imaplib.IMAP4_SSL(
+            wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT),
+            ssl_context=ctx,
+        )
+    else:
+        conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
+
+    try:
+        conn.login(wcfg["user"], wcfg["password"])
+        status, _ = conn.select(folder)
+        if status != "OK":
+            raise RuntimeError(f"Could not select folder: {folder!r}")
+
+        for uid in uids:
+            uid_bytes = uid.encode() if isinstance(uid, str) else uid
+            status, data = conn.uid("STORE", uid_bytes, store_cmd, flag_str)
+            results.append({
+                "uid": uid,
+                "status": "ok" if status == "OK" else "failed",
+            })
+
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+    return {
+        "uids": uids,
+        "flags": flags,
+        "action": action,
+        "folder": folder,
+        "results": results,
+    }
+
+
 def output_json(data: dict[str, Any]) -> None:
     """Write JSON to stdout. All logging must go to stderr."""
     print(json.dumps(data, indent=2, default=str))
@@ -546,6 +643,16 @@ def output_human_check(data: dict[str, Any]) -> None:
         print(f"No unread messages in {folder}.")
     else:
         print(f"{count} unread message(s) in {folder}.")
+
+
+def output_human_flag(data: dict[str, Any]) -> None:
+    """Write human-readable flag result to stdout."""
+    action = data.get("action", "add")
+    prefix = "+" if action == "add" else "-"
+    flags_display = " ".join(f"{prefix}{f}" for f in data.get("flags", []))
+    uids_display = ", ".join(data.get("uids", []))
+    folder = data.get("folder", "INBOX")
+    print(f"Flags updated: {flags_display} on UID(s) {uids_display} ({folder})")
 
 
 def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
@@ -673,6 +780,16 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         elif cfg.get("imap_host"):
             logger.warning("  (Could not save to Sent folder)")
 
+        if args.message_id and cfg.get("imap_host"):
+            try:
+                imap_store_flags(
+                    cfg, [args.message_id], [r"\Seen", r"\Answered"],
+                    action="add", folder=DEFAULT_IMAP_FOLDER,
+                )
+                logger.info("  (Marked original as Seen+Answered)")
+            except Exception as e:
+                logger.warning(f"Could not flag original message: {e}")
+
         return 0
 
     except ConnectionError as e:
@@ -771,6 +888,12 @@ def cmd_read(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     else:
         output_json(message)
 
+    if not args.no_mark_read:
+        try:
+            imap_store_flags(cfg, [args.uid], [r"\Seen"], action="add", folder=args.folder)
+        except Exception as e:
+            logger.warning(f"Could not mark message as read: {e}")
+
     return 0
 
 
@@ -848,6 +971,75 @@ def cmd_download(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_flag(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the flag subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    uid_list = [u.strip() for u in args.uids.split(",") if u.strip()]
+    if not uid_list:
+        logger.error("No UIDs provided.")
+        return 1
+
+    normalized_flags, errors = validate_imap_flags(args.flags)
+    if errors:
+        for error in errors:
+            logger.error(error)
+        return 1
+
+    try:
+        data = imap_store_flags(
+            cfg, uid_list, normalized_flags,
+            action=args.action, folder=args.folder,
+        )
+    except (ConnectionError, TimeoutError, OSError, imaplib.IMAP4.error) as e:
+        logger.error(f"Failed to update flags: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error updating flags: {e}")
+        return 1
+
+    if args.human:
+        output_human_flag(data)
+    else:
+        output_json(data)
+
+    return 0
+
+
+def cmd_move(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the move subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    try:
+        move_message(
+            args.uid,
+            args.dest_folder,
+            src_folder=args.folder,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        logger.error(f"Failed to move message: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error moving message: {e}")
+        return 1
+
+    data = {
+        "uid": args.uid,
+        "from_folder": args.folder,
+        "to_folder": args.dest_folder,
+    }
+
+    if args.human:
+        print(f"Moved UID {args.uid} from {args.folder} to {args.dest_folder}")
+    else:
+        output_json(data)
+
+    return 0
+
+
 def main() -> int:
     """Main entry point with subcommand dispatch."""
     if not WAGGLE_AVAILABLE:
@@ -899,6 +1091,7 @@ def main() -> int:
     read_parser.add_argument("uid", help="IMAP message UID")
     read_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="IMAP folder (default: INBOX)")
     read_parser.add_argument("--human", action="store_true", help="Human-readable output")
+    read_parser.add_argument("--no-mark-read", action="store_true", help="Don't mark message as read")
 
     # check subcommand
     check_parser = subparsers.add_parser("check", help="Check for unread messages")
@@ -910,6 +1103,21 @@ def main() -> int:
     dl_parser.add_argument("uid", help="IMAP message UID")
     dl_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="IMAP folder (default: INBOX)")
     dl_parser.add_argument("--dest-dir", default=".", help="Destination directory (default: .)")
+
+    # flag subcommand
+    flag_parser = subparsers.add_parser("flag", help="Manage IMAP flags on messages")
+    flag_parser.add_argument("action", choices=["add", "remove"], help="Flag operation")
+    flag_parser.add_argument("uids", help="Message UID(s), comma-separated for bulk")
+    flag_parser.add_argument("flags", nargs="+", help=r"Flags: \Seen \Answered \Flagged")
+    flag_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="IMAP folder (default: INBOX)")
+    flag_parser.add_argument("--human", action="store_true", help="Human-readable output")
+
+    # move subcommand
+    move_parser = subparsers.add_parser("move", help="Move a message to another folder")
+    move_parser.add_argument("uid", help="Message UID")
+    move_parser.add_argument("dest_folder", help="Destination IMAP folder")
+    move_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="Source folder (default: INBOX)")
+    move_parser.add_argument("--human", action="store_true", help="Human-readable output")
 
     # config subcommand
     subparsers.add_parser("config", help="Validate configuration")
@@ -934,6 +1142,8 @@ def main() -> int:
         "read": cmd_read,
         "check": cmd_check,
         "download": cmd_download,
+        "flag": cmd_flag,
+        "move": cmd_move,
         "config": cmd_config,
     }
 
