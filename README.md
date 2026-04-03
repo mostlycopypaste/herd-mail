@@ -806,8 +806,30 @@ This is intentionally opt-in for security.
 - **Type Hints**: Full type annotations for Python 3.8+
 - **Logging**: Professional logging infrastructure (not print statements)
 - **Error Handling**: Specific exception types with helpful messages
-- **Testing**: 95% test coverage with 97 test cases
+- **Testing**: 95% test coverage with 105 test cases
 - **Architecture**: Subcommand dispatch pattern with cmd_* handlers
+
+## CI/CD
+
+GitHub Actions run automatically:
+
+- **Tests** (`test.yml`): Runs the full test suite on every push to `main` and on pull requests. Tests across Python 3.10, 3.12, and 3.14.
+- **Release** (`release.yml`): Triggered by pushing a `v*` tag. Runs the test suite first, then creates a GitHub release with auto-generated notes from the commit log.
+
+### Creating a Release
+
+```bash
+# 1. Update __version__ in herd_mail.py and version in pyproject.toml
+# 2. Commit the version bump
+git add herd_mail.py pyproject.toml
+git commit -m "Bump version to 3.2.0"
+
+# 3. Tag and push
+git tag -a v3.2.0 -m "v3.2.0: short description"
+git push origin main v3.2.0
+```
+
+The release workflow will run tests and create the GitHub release automatically. If tests fail, the release is not created.
 
 ## Contributing
 
@@ -816,6 +838,8 @@ This is intentionally opt-in for security.
 3. Add tests for new functionality (maintain 95% coverage)
 4. Ensure all tests pass: `python3 -m pytest test_herd_mail.py -v`
 5. Submit a pull request
+
+CI will run the test suite automatically on your PR.
 
 ## License
 
@@ -828,4 +852,4 @@ MIT — same as waggle
 
 ---
 
-**Status**: ✅ Production Ready | **Version**: 3.0.0 | **Security**: Hardened | **Tests**: 97/97 Passing
+**Status**: ✅ Production Ready | **Version**: 3.1.0 | **Security**: Hardened | **Tests**: 105/105 Passing
