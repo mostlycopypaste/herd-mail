@@ -61,7 +61,7 @@ Optional vars: `WAGGLE_IMAP_HOST` (required for read commands), `WAGGLE_IMAP_POR
 
 ### Single-file Design
 
-Everything lives in `herd_mail.py` (≈1100 lines) with tests in `test_herd_mail.py`. No package structure.
+Everything lives in `herd_mail.py` (~1300 lines) with tests in `test_herd_mail.py` (~1750 lines). No package structure.
 
 ### Subcommand Dispatch
 
@@ -110,7 +110,7 @@ Auto-flag operations are non-fatal (warning on failure, command still succeeds).
 
 ## Security
 
-See `SECURITY_FIXES.md` for full details. Key protections:
+Key protections:
 - Email header injection prevention (validates addresses)
 - Path traversal protection (blocks sensitive dirs like `/etc`, `/proc`)
 - ANSI escape stripping for terminal output

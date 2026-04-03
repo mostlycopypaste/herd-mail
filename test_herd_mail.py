@@ -1674,6 +1674,120 @@ class TestAutoFlagOnReply(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
+class TestFormatQuoteBlock(unittest.TestCase):
+    """Test formatting of quoted original message for replies."""
+
+    def test_formats_quote_with_body(self):
+        """Quote block includes header and body text."""
+        original = {
+            "from_raw": "Alice <alice@example.com>",
+            "date": "Tue, 01 Apr 2026 10:30:00 +0000",
+            "subject": "Project update",
+            "body_plain": "Here is the update.\nSecond line.",
+        }
+        result = hm.format_quote_block(original)
+        self.assertIn("-----Original Message-----", result)
+        self.assertIn("From: Alice <alice@example.com>", result)
+        self.assertIn("Sent: Tue, 01 Apr 2026 10:30:00 +0000", result)
+        self.assertIn("Subject: Project update", result)
+        self.assertIn("Here is the update.", result)
+        self.assertIn("Second line.", result)
+
+    def test_formats_quote_without_body(self):
+        """Quote block works when original has no body."""
+        original = {
+            "from_raw": "Bob <bob@example.com>",
+            "date": "Wed, 02 Apr 2026 12:00:00 +0000",
+            "subject": "Empty",
+            "body_plain": None,
+        }
+        result = hm.format_quote_block(original)
+        self.assertIn("-----Original Message-----", result)
+        self.assertIn("From: Bob <bob@example.com>", result)
+        self.assertNotIn("None", result)
+
+    def test_formats_quote_missing_fields(self):
+        """Quote block handles missing dict keys gracefully."""
+        original = {}
+        result = hm.format_quote_block(original)
+        self.assertIn("-----Original Message-----", result)
+
+
+class TestReplyQuotedBody(unittest.TestCase):
+    """Test that cmd_send appends quoted original to reply body."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.save_to_sent')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.read_message')
+    @patch('herd_mail.check_recently_sent')
+    def test_reply_includes_quoted_original(self, mock_check, mock_read_msg,
+                                             mock_send, mock_save, mock_store):
+        """Reply body sent to send_email includes quoted original message."""
+        mock_check.return_value = False
+        mock_read_msg.return_value = {
+            "message_id": "<orig@example.com>",
+            "reply_references": "<orig@example.com>",
+            "subject": "Original Subject",
+            "from_raw": "Alice <alice@example.com>",
+            "date": "Tue, 01 Apr 2026 10:30:00 +0000",
+            "body_plain": "Original body text here.",
+        }
+        mock_send.return_value = None
+        mock_save.return_value = True
+        mock_store.return_value = {"results": [{"uid": "42", "status": "ok"}]}
+
+        with patch('sys.argv', ['herd_mail.py', 'send', '--message-id', '42',
+                                '--to', 'alice@example.com',
+                                '--subject', 'Re: Original Subject',
+                                '--body', 'Thanks for the update!']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        body_sent = mock_send.call_args[1].get('body_md') or mock_send.call_args[0][2]
+        self.assertIn("Thanks for the update!", body_sent)
+        self.assertIn("-----Original Message-----", body_sent)
+        self.assertIn("Original body text here.", body_sent)
+
+    @patch('herd_mail.imap_store_flags')
+    @patch('herd_mail.save_to_sent')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.read_message')
+    @patch('herd_mail.check_recently_sent')
+    def test_non_reply_no_quote(self, mock_check, mock_send_email,
+                                 mock_send, mock_save, mock_store):
+        """Non-reply send does not add any quote block."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'friend@example.com',
+                                '--subject', 'Hello', '--body', 'Just a message']):
+            result = hm.main()
+
+        self.assertEqual(result, 0)
+        body_sent = mock_send.call_args[1].get('body_md') or mock_send.call_args[0][2]
+        self.assertNotIn("-----Original Message-----", body_sent)
+
+
 class TestWaggleStubs(unittest.TestCase):
     """Test that waggle function stubs exist for mocking."""
 
