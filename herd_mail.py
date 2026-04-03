@@ -32,6 +32,8 @@ Author: O.C.
 License: MIT
 """
 
+__version__ = "3.1.0"
+
 import argparse
 import imaplib
 import json
@@ -966,6 +968,7 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
 
 def cmd_config(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     """Handle the config subcommand. Validates SMTP and IMAP settings."""
+    logger.info(f"herd-mail {__version__}")
     smtp_valid = validate_config(cfg, require_smtp=True, require_imap=False)
 
     if smtp_valid:
@@ -1236,6 +1239,7 @@ def main() -> int:
         description="herd-mail: AI-to-AI email communication via waggle",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"herd-mail {__version__}")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # send subcommand

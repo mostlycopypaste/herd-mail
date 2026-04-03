@@ -8,7 +8,7 @@ herd-mail is a CLI wrapper for [waggle](https://github.com/jasonacox-sam/waggle-
 
 This is a standalone Python script, not a package. No build system or setup.py required.
 
-**Version 3.0**: Subcommand-based CLI (`send`, `list`, `read`, `check`, `download`, `flag`, `move`, `config`). JSON-first output for AI agents (stdout=JSON, stderr=logging).
+**Version 3.1**: Subcommand-based CLI (`send`, `list`, `read`, `check`, `download`, `flag`, `move`, `config`). JSON-first output for AI agents (stdout=JSON, stderr=logging). Version tracked via `__version__` in `herd_mail.py`, `--version` flag, and `config` output. Keep `__version__` and `pyproject.toml` version in sync.
 
 ## Development Commands
 
@@ -32,15 +32,17 @@ python3 test_herd_mail.py
 python3 herd_mail.py config
 ```
 
-**Test Coverage**: ~95% | **Tests**: 97 passing
+**Test Coverage**: ~95% | **Tests**: 105 passing
 
 Tests mock SMTP/IMAP so they run without real credentials. Tests use `unittest.TestCase` classes, not pytest fixtures.
 
 ### Dependencies
+
+Defined in `pyproject.toml`. Install with:
 ```bash
-pip install waggle-mail          # Required
-pip install markdown pygments    # Optional (for --rich flag)
-pip install pytest               # For testing
+pip install .                    # Core (waggle-mail)
+pip install ".[rich]"            # + markdown/pygments for --rich flag
+pip install ".[dev]"             # + pytest
 ```
 
 ## Configuration
