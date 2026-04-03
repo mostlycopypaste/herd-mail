@@ -428,6 +428,29 @@ def build_waggle_config(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def format_quote_block(original: dict[str, Any]) -> str:
+    """Format an already-fetched message as an Outlook-style quoted block.
+
+    This avoids relying on waggle's fetch_quoted_body(), which re-fetches
+    the message via IMAP SEARCH by Message-ID — a search that fails on
+    some providers (e.g., Amazon WorkMail).
+    """
+    from_raw = original.get("from_raw", "")
+    date = original.get("date", "")
+    subject = original.get("subject", "")
+    body_plain = original.get("body_plain") or ""
+
+    header = (
+        f"\n\n-----Original Message-----\n"
+        f"From: {from_raw}\n"
+        f"Sent: {date}\n"
+        f"Subject: {subject}\n"
+    )
+    if body_plain.strip():
+        return header + "\n" + body_plain.strip()
+    return header
+
+
 def save_to_sent(
     cfg: dict[str, Any],
     to: str,
@@ -867,6 +890,9 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
             )
             in_reply_to = original.get("message_id")
             references = original.get("reply_references")
+            # Append quoted original — waggle's fetch_quoted_body re-fetches
+            # via IMAP SEARCH by Message-ID which fails on some providers
+            body += format_quote_block(original)
             subject = sanitize_for_display(original.get('subject', 'Unknown'))
             logger.info(f"  Found: {subject}")
         except (ConnectionError, TimeoutError, OSError) as e:
