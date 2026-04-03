@@ -1,0 +1,19 @@
+[project]
+name = "herd-mail"
+version = "3.1.0"
+description = "AI-to-AI email communication CLI via waggle"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+dependencies = [
+    "waggle-mail>=1.8.7",
+]
+
+[project.optional-dependencies]
+rich = [
+    "markdown>=3.4",
+    "pygments>=2.14",
+]
+dev = [
+    "pytest>=7.0",
+]

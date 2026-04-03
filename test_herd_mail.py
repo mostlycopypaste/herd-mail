@@ -23,6 +23,48 @@ sys.path.insert(0, str(Path(__file__).parent))
 import herd_mail as hm
 
 
+class TestVersion(unittest.TestCase):
+    """Test version tracking."""
+
+    def test_version_string_exists(self):
+        """Module has a __version__ attribute."""
+        self.assertTrue(hasattr(hm, '__version__'))
+        self.assertRegex(hm.__version__, r'^\d+\.\d+\.\d+')
+
+    def test_version_flag(self):
+        """--version prints version and exits."""
+        with patch('herd_mail.WAGGLE_AVAILABLE', True):
+            with self.assertRaises(SystemExit) as ctx:
+                with patch('sys.argv', ['herd_mail.py', '--version']):
+                    hm.main()
+            self.assertEqual(ctx.exception.code, 0)
+
+    def test_config_shows_version(self):
+        """Config output includes version."""
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+
+        try:
+            with patch('herd_mail.WAGGLE_AVAILABLE', True), \
+                 patch('sys.argv', ['herd_mail.py', 'config']), \
+                 patch('herd_mail.logger') as mock_logger:
+                hm.main()
+
+            log_output = " ".join(
+                str(call) for call in mock_logger.info.call_args_list
+            )
+            self.assertIn(hm.__version__, log_output)
+        finally:
+            for key in list(os.environ.keys()):
+                if key.startswith("WAGGLE_"):
+                    del os.environ[key]
+
+
 class TestEmailValidation(unittest.TestCase):
     """Test email address validation."""
 
