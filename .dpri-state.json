@@ -1,0 +1,66 @@
+{
+  "pipeline_id": "d7ea4c24-641e-4608-86d9-f9b4092a8db7",
+  "task": "Update herd-mail with latest waggle features",
+  "current_phase": "implement",
+  "phases": {
+    "document": {
+      "status": "complete",
+      "output": "docs/specs/waggle-refactor-spec.md",
+      "started": "2026-04-27T16:36:06.740359+00:00",
+      "completed": "2026-04-27T16:38:05.774552+00:00",
+      "agent_id": "oc-main"
+    },
+    "plan": {
+      "status": "complete",
+      "output": "docs/plans/waggle-refactor-plan.md",
+      "started": "2026-04-27T16:38:05.774552+00:00",
+      "completed": "2026-04-27T16:40:05.466674+00:00",
+      "agent_id": "oc-main",
+      "checkpoint": "approved",
+      "approver": "auto"
+    },
+    "review": {
+      "status": "complete",
+      "output": "docs/reviews/waggle-refactor-review.md",
+      "started": "2026-04-27T16:40:05.466674+00:00",
+      "completed": "2026-04-27T16:40:20.070002+00:00",
+      "agent_id": "oc-main"
+    },
+    "implement": {
+      "status": "in_progress",
+      "output": null,
+      "started": "2026-04-27T16:40:20.070002+00:00",
+      "completed": null,
+      "agent_id": null,
+      "retry_count": 0,
+      "max_retries": 2
+    },
+    "verify": {
+      "status": "pending",
+      "output": null,
+      "started": null,
+      "completed": null,
+      "agent_id": null
+    },
+    "merge": {
+      "status": "pending",
+      "output": null,
+      "started": null,
+      "completed": null,
+      "agent_id": null,
+      "checkpoint": "none",
+      "approver": null
+    }
+  },
+  "config": {
+    "auto_approve": [
+      "plan"
+    ],
+    "max_retries": 2,
+    "max_review_loops": 2,
+    "delivery_channel": "whatsapp"
+  },
+  "created": "2026-04-27T16:36:06.740359+00:00",
+  "last_updated": "2026-04-27T16:40:20.070002+00:00",
+  "token_usage": 0
+}
