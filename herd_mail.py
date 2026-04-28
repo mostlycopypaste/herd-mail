@@ -42,8 +42,7 @@ import os
 import re
 import ssl
 import sys
-from email.message import EmailMessage
-from email.utils import formatdate, parseaddr
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Optional
 
@@ -54,7 +53,7 @@ DEFAULT_DUPLICATE_CHECK_MINUTES = 5
 DEFAULT_IMAP_FOLDER = "INBOX"
 DEFAULT_NO_BODY_MESSAGE = "(No message body)"
 DEFAULT_LIST_LIMIT = 20
-SENT_FOLDER_CANDIDATES = ["Sent", "Sent Items", "INBOX.Sent"]
+
 ALLOWED_IMAP_FLAGS = {r"\Seen", r"\Answered", r"\Flagged"}
 
 # Logging setup
@@ -84,6 +83,7 @@ try:
     from waggle import (
         send_email, check_recently_sent, read_message,
         list_inbox, download_attachments, move_message,
+        set_flags, clear_flags,
     )
     WAGGLE_AVAILABLE = True
 except ImportError as e:
@@ -453,97 +453,6 @@ def format_quote_block(original: dict[str, Any]) -> str:
     return header
 
 
-def save_to_sent(
-    cfg: dict[str, Any],
-    to: str,
-    subject: str,
-    body: str,
-    cc: Optional[str] = None,
-    reply_to: Optional[str] = None,
-    in_reply_to: Optional[str] = None,
-    references: Optional[str] = None,
-) -> bool:
-    """
-    Save a copy of the sent message to the IMAP Sent folder.
-
-    Returns True if saved, False on any failure. Failures are non-fatal.
-    """
-    wcfg = build_waggle_config(cfg)
-
-    # Build RFC822 message
-    msg = EmailMessage()
-    from_display = f"{wcfg['from_name']} <{wcfg['from_addr']}>" if wcfg.get("from_name") else wcfg["from_addr"]
-    msg["From"] = from_display
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg["Date"] = formatdate(localtime=True)
-    if cc:
-        msg["Cc"] = cc
-    if reply_to:
-        msg["Reply-To"] = reply_to
-    if in_reply_to:
-        msg["In-Reply-To"] = in_reply_to
-    if references:
-        msg["References"] = references
-    msg.set_content(body)
-
-    msg_bytes = msg.as_bytes()
-
-    try:
-        # Connect to IMAP
-        if wcfg.get("imap_tls", True):
-            conn = imaplib.IMAP4_SSL(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
-        else:
-            conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
-
-        try:
-            conn.login(wcfg["user"], wcfg["password"])
-
-            # Find the Sent folder
-            status, folder_data = conn.list()
-            folder_names = []
-            if status == "OK" and folder_data:
-                for item in folder_data:
-                    if isinstance(item, bytes):
-                        decoded = item.decode("utf-8", errors="replace")
-                        # Extract folder name from IMAP LIST response
-                        # Format: (flags) "delimiter" "name"
-                        parts = decoded.rsplit('"', 2)
-                        if len(parts) >= 2:
-                            folder_names.append(parts[-2])
-
-            sent_folder = None
-            for candidate in SENT_FOLDER_CANDIDATES:
-                if candidate in folder_names:
-                    sent_folder = candidate
-                    break
-
-            if not sent_folder:
-                logger.warning(f"No Sent folder found (tried: {', '.join(SENT_FOLDER_CANDIDATES)})")
-                return False
-
-            # Append message
-            status, _ = conn.append(f'"{sent_folder}"', "\\Seen", None, msg_bytes)
-            if status != "OK":
-                logger.warning(f"IMAP APPEND failed: {status}")
-                return False
-
-            return True
-
-        finally:
-            try:
-                conn.logout()
-            except Exception:
-                pass
-
-    except (OSError, imaplib.IMAP4.error) as e:
-        logger.warning(f"Could not save to Sent folder: {e}")
-        return False
-    except Exception as e:
-        logger.warning(f"Unexpected error saving to Sent folder: {e}")
-        return False
-
-
 def resolve_sequence_to_uids(
     cfg: dict[str, Any],
     messages: list[dict[str, Any]],
@@ -653,87 +562,6 @@ def uid_to_sequence_number(
     except (OSError, imaplib.IMAP4.error) as e:
         logger.warning(f"Could not convert UID {uid} to sequence number: {e}")
         return None
-
-
-def imap_store_flags(
-    cfg: dict[str, Any],
-    uids: list[str],
-    flags: list[str],
-    action: str = "add",
-    folder: str = DEFAULT_IMAP_FOLDER,
-) -> dict[str, Any]:
-    """
-    Set or remove IMAP flags on one or more messages.
-
-    Args:
-        cfg: herd-mail config dict (from get_config())
-        uids: List of IMAP UIDs as strings
-        flags: List of validated flag strings (e.g. [r"\\Seen", r"\\Answered"])
-        action: "add" or "remove"
-        folder: IMAP folder to operate on
-
-    Returns:
-        Result dict with per-UID outcomes.
-
-    Raises:
-        OSError, imaplib.IMAP4.error on connection failures.
-    """
-    wcfg = build_waggle_config(cfg)
-    store_cmd = "+FLAGS" if action == "add" else "-FLAGS"
-    flag_str = f"({' '.join(flags)})"
-
-    results = []
-    ctx = ssl.create_default_context()
-
-    if wcfg.get("imap_tls", True):
-        conn = imaplib.IMAP4_SSL(
-            wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT),
-            ssl_context=ctx,
-        )
-    else:
-        conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
-
-    try:
-        conn.login(wcfg["user"], wcfg["password"])
-        status, _ = conn.select(folder)
-        if status != "OK":
-            raise RuntimeError(f"Could not select folder: {folder!r}")
-
-        for uid in uids:
-            uid_bytes = uid.encode() if isinstance(uid, str) else uid
-            status, data = conn.uid("STORE", uid_bytes, store_cmd, flag_str)
-
-            # OK + [None] means the flag was already set (no change needed) — not an error
-            if status == "OK" and data == [None]:
-                # Verify the UID actually exists to distinguish "already set" from "bad UID"
-                verify_status, verify_data = conn.uid("FETCH", uid_bytes, "(FLAGS)")
-                if verify_status == "OK" and verify_data and verify_data[0]:
-                    results.append({"uid": uid, "status": "ok"})
-                else:
-                    logger.warning(
-                        f"UID {uid} not found in {folder} — "
-                        f"may be a sequence number, not a real UID"
-                    )
-                    results.append({"uid": uid, "status": "not_found"})
-            else:
-                results.append({
-                    "uid": uid,
-                    "status": "ok" if status == "OK" else "failed",
-                })
-
-    finally:
-        try:
-            conn.logout()
-        except Exception:
-            pass
-
-    return {
-        "uids": uids,
-        "flags": flags,
-        "action": action,
-        "folder": folder,
-        "results": results,
-    }
 
 
 def output_json(data: dict[str, Any]) -> None:
@@ -922,25 +750,16 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
             config=build_waggle_config(cfg),
         )
 
-        saved = False
-        if cfg.get("imap_host"):
-            saved = save_to_sent(
-                cfg, args.to, args.subject, body,
-                cc=args.cc, reply_to=args.reply_to,
-                in_reply_to=in_reply_to, references=references,
-            )
-
         logger.info("Email sent successfully!")
-        if saved:
-            logger.info("  (Saved to Sent folder via IMAP)")
-        elif cfg.get("imap_host"):
-            logger.warning("  (Could not save to Sent folder)")
+        logger.info("  (Saved to Sent folder via waggle)")
 
         if args.message_id and cfg.get("imap_host"):
             try:
-                imap_store_flags(
-                    cfg, [args.message_id], [r"\Seen", r"\Answered"],
-                    action="add", folder=DEFAULT_IMAP_FOLDER,
+                set_flags(
+                    args.message_id,
+                    [r"\Seen", r"\Answered"],
+                    folder=DEFAULT_IMAP_FOLDER,
+                    config=build_waggle_config(cfg),
                 )
                 logger.info("  (Marked original as Seen+Answered)")
             except Exception as e:
@@ -1055,7 +874,13 @@ def cmd_read(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     # Use the real UID (not sequence number) for flag operations
     if not args.no_mark_read:
         try:
-            imap_store_flags(cfg, [args.uid], [r"\Seen"], action="add", folder=args.folder)
+            read_message(
+                args.uid,
+                folder=args.folder,
+                mark_read=True,
+                config=build_waggle_config(cfg),
+            )
+            logger.info("  (Marked message as read)")
         except Exception as e:
             logger.warning(f"Could not mark message as read: {e}")
 
@@ -1160,11 +985,28 @@ def cmd_flag(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         return 1
 
     try:
-        data = imap_store_flags(
-            cfg, uid_list, normalized_flags,
-            action=args.action, folder=args.folder,
-        )
-    except (ConnectionError, TimeoutError, OSError, imaplib.IMAP4.error) as e:
+        if args.action == "add":
+            set_flags(
+                ",".join(uid_list),
+                normalized_flags,
+                folder=args.folder,
+                config=build_waggle_config(cfg),
+            )
+        else:
+            clear_flags(
+                ",".join(uid_list),
+                normalized_flags,
+                folder=args.folder,
+                config=build_waggle_config(cfg),
+            )
+        data = {
+            "uids": uid_list,
+            "flags": normalized_flags,
+            "action": args.action,
+            "folder": args.folder,
+            "results": [{"uid": u, "status": "ok"} for u in uid_list],
+        }
+    except (ConnectionError, TimeoutError, OSError) as e:
         logger.error(f"Failed to update flags: {e}")
         return 1
     except Exception as e:
