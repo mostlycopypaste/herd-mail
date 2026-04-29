@@ -849,13 +849,11 @@ def cmd_read(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if not validate_config(cfg, require_smtp=False, require_imap=True):
         return 1
 
-    # Convert UID to sequence number for waggle (which expects sequence numbers)
-    seq_num = uid_to_sequence_number(cfg, args.uid, folder=args.folder)
-    waggle_id = seq_num if seq_num else args.uid
-
+    # waggle 1.9.12+ uses UID-based IMAP commands (m.uid("FETCH", ...))
+    # Pass the real UID directly — no sequence number conversion needed
     try:
         message = read_message(
-            waggle_id,
+            args.uid,
             folder=args.folder,
             config=build_waggle_config(cfg),
         )
@@ -871,7 +869,7 @@ def cmd_read(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     else:
         output_json(message)
 
-    # Use the real UID (not sequence number) for flag operations
+    # Mark as read using UID directly (waggle 1.9.12+ uses UID STORE)
     if not args.no_mark_read:
         try:
             read_message(
