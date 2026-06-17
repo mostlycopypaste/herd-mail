@@ -47,7 +47,15 @@ from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Optional
 
-import requests  # noqa: E402
+# requests is only needed for the optional rotating-footer feature. Import it
+# lazily/guarded so the rest of the CLI (send/read/list/stats/...) works even
+# when requests isn't installed.
+try:
+    import requests  # noqa: E402
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    requests = None  # type: ignore[assignment]
+    REQUESTS_AVAILABLE = False
 
 # Constants
 DEFAULT_SMTP_PORT = 465
@@ -96,6 +104,10 @@ def fetch_footer(category: Optional[str] = None, context: Optional[str] = None, 
     """
     if not HERD_ADMIN_KEY:
         logger.debug("No HERD_INBOX_ADMIN_KEY set, skipping footer")
+        return None
+
+    if not REQUESTS_AVAILABLE:
+        logger.debug("requests not installed, skipping footer")
         return None
 
     params: dict[str, Any] = {}

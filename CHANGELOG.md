@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`auto_file_noise.py --format json` crash:** `json` was used but never imported. Added the import.
+- **`requests` import crash:** v3.2.0 made `requests` a hard top-level import, which broke the CLI (and CI) anywhere `requests` wasn't installed. It is now a guarded optional import — the rotating footer degrades gracefully when `requests` is absent — and is declared as a real dependency in `pyproject.toml`.
+
+### CI / packaging
+
+- Declared `requests>=2.28` in `pyproject.toml` dependencies.
+- CI now installs the package itself (`pip install -e .[dev]`) so test dependencies stay in sync with `pyproject.toml` instead of a hardcoded list.
 
 ## [3.2.0] - 2026-05-14
 
