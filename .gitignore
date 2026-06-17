@@ -43,3 +43,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 docs/waggle-issues/
+
+# Runtime logs from helper scripts
+scripts/oc-helpers/*.log
+auto_file_noise.log

@@ -32,9 +32,10 @@ Author: O.C.
 License: MIT
 """
 
-__version__ = "3.1.0"
+__version__ = "3.3.0"
 
 import argparse
+import datetime
 import imaplib
 import json
 import logging
@@ -45,6 +46,8 @@ import sys
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, Optional
+
+import requests  # noqa: E402
 
 # Constants
 DEFAULT_SMTP_PORT = 465
@@ -74,6 +77,49 @@ if WAGGLE_DEV_PATH:
         logger.info(f"Using development waggle from: {dev_path}")
     else:
         logger.warning(f"WAGGLE_DEV_PATH set but path doesn't exist: {dev_path}")
+
+# Herd-inbox footer API
+HERD_INBOX_URL = os.environ.get("HERD_INBOX_URL", "https://herd.mostlycopyandpaste.com")
+HERD_ADMIN_KEY = os.environ.get("HERD_INBOX_ADMIN_KEY", "")
+
+
+def fetch_footer(category: Optional[str] = None, context: Optional[str] = None, exclude_ids: Optional[list[int]] = None) -> Optional[str]:
+    """Fetch a rotating footer message from the herd-inbox API.
+
+    Args:
+        category: Filter by category (token_economics, social_proof, fomo, cheeky)
+        context: Filter by context (announcement, discussion)
+        exclude_ids: Footer IDs to exclude from selection
+
+    Returns:
+        Footer text string, or None if the API call fails.
+    """
+    if not HERD_ADMIN_KEY:
+        logger.debug("No HERD_INBOX_ADMIN_KEY set, skipping footer")
+        return None
+
+    params: dict[str, Any] = {}
+    if category:
+        params["category"] = category
+    if context:
+        params["context"] = context
+    if exclude_ids:
+        params["exclude"] = ",".join(str(i) for i in exclude_ids)
+
+    try:
+        resp = requests.get(
+            f"{HERD_INBOX_URL}/api/admin/footer",
+            headers={"X-Admin-Key": HERD_ADMIN_KEY},
+            params=params,
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("footer")
+    except requests.RequestException as e:
+        logger.warning(f"Failed to fetch footer from herd-inbox: {e}")
+        return None
+
 
 # Try to import waggle, but don't exit at module level (allows tests to run)
 WAGGLE_AVAILABLE = False
@@ -732,6 +778,18 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
             logger.warning(f"Unexpected error fetching message: {e}")
             logger.info("  Continuing without threading headers...")
 
+    # Append footer (default: on, unless --no-footer)
+    if not args.no_footer:
+        footer_text = fetch_footer(
+            category=args.footer_category,
+            context=args.footer_context,
+        )
+        if footer_text:
+            body = body + "\n\n---\n" + footer_text
+            logger.info(f"Appended footer: {footer_text[:60]}...")
+        else:
+            logger.warning("Footer requested but none available, sending without footer")
+
     # Send the email
     try:
         to_display = sanitize_for_display(args.to, max_length=50)
@@ -1056,6 +1114,148 @@ def cmd_move(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0
 
 
+def get_folder_stats(
+    cfg: dict[str, Any],
+    folders: Optional[list[str]] = None,
+    days: int = 7,
+) -> list[dict[str, Any]]:
+    """Collect per-folder message counts via a single IMAP connection.
+
+    For each folder returns total message count, unread (UNSEEN) count, and
+    the number of messages received within the last `days` days. Reuses the
+    same direct-IMAP pattern as resolve_sequence_to_uids() so it does not
+    depend on waggle's listing layer.
+
+    Args:
+        cfg: Configuration dictionary.
+        folders: Explicit folder list. If None, every folder LIST returns
+            (excluding \\Noselect containers) is measured.
+        days: Window in days for the "recent" count.
+
+    Returns:
+        A list of {folder, total, unread, recent, error} dicts. Folders that
+        cannot be selected get an `error` string and zeroed counts.
+    """
+    wcfg = build_waggle_config(cfg)
+    ctx = ssl.create_default_context()
+    cutoff = (
+        datetime.date.today() - datetime.timedelta(days=days)
+    ).strftime("%d-%b-%Y")
+    results: list[dict[str, Any]] = []
+
+    try:
+        if wcfg.get("imap_tls", True):
+            conn = imaplib.IMAP4_SSL(
+                wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT),
+                ssl_context=ctx,
+            )
+        else:
+            conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
+    except (OSError, imaplib.IMAP4.error) as e:
+        logger.error(f"Could not connect to IMAP for stats: {e}")
+        return results
+
+    try:
+        conn.login(wcfg["user"], wcfg["password"])
+
+        # Discover folders if not given explicitly.
+        if folders is None:
+            folders = []
+            status, data = conn.list()
+            if status == "OK" and data:
+                for raw in data:
+                    if raw is None:
+                        continue
+                    line = raw.decode(errors="replace")
+                    # Skip containers that cannot hold messages.
+                    if "\\Noselect" in line:
+                        continue
+                    # Folder name is the final token, possibly quoted.
+                    if line.endswith('"'):
+                        name = line[line.rfind(' "') + 2:-1]
+                    else:
+                        name = line.split()[-1].strip('"')
+                    if name:
+                        folders.append(name)
+
+        for folder in folders:
+            entry: dict[str, Any] = {
+                "folder": folder,
+                "total": 0,
+                "unread": 0,
+                "recent": 0,
+                "error": None,
+            }
+            try:
+                status, _ = conn.select(f'"{folder}"', readonly=True)
+                if status != "OK":
+                    entry["error"] = "could not select"
+                    results.append(entry)
+                    continue
+                status, d = conn.search(None, "ALL")
+                entry["total"] = len(d[0].split()) if d and d[0] else 0
+                status, d = conn.search(None, "UNSEEN")
+                entry["unread"] = len(d[0].split()) if d and d[0] else 0
+                status, d = conn.search(None, f"(SINCE {cutoff})")
+                entry["recent"] = len(d[0].split()) if d and d[0] else 0
+            except (imaplib.IMAP4.error, OSError) as e:
+                entry["error"] = str(e)
+            results.append(entry)
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+    return results
+
+
+def output_human_stats(data: dict[str, Any]) -> None:
+    """Pretty-print folder stats as an aligned table."""
+    days = data.get("days", 7)
+    rows = data.get("folders", [])
+    if not rows:
+        print("No folders found.")
+        return
+    name_w = max((len(r["folder"]) for r in rows), default=6)
+    name_w = max(name_w, len("Folder"))
+    header = f"{'Folder':<{name_w}}  {'total':>7}  {'unread':>7}  {'last' + str(days) + 'd':>7}"
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        if r.get("error"):
+            print(f"{r['folder']:<{name_w}}  {'ERR':>7}  {'-':>7}  {'-':>7}  ({r['error']})")
+        else:
+            print(
+                f"{r['folder']:<{name_w}}  {r['total']:>7}  {r['unread']:>7}  {r['recent']:>7}"
+            )
+
+
+def cmd_stats(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the stats subcommand: per-folder counts in one IMAP pass."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    folders = None
+    if args.folder:
+        folders = [f.strip() for f in args.folder.split(",") if f.strip()]
+
+    rows = get_folder_stats(cfg, folders=folders, days=args.days)
+
+    data = {
+        "days": args.days,
+        "count": len(rows),
+        "folders": rows,
+    }
+
+    if args.human:
+        output_human_stats(data)
+    else:
+        output_json(data)
+
+    return 0
+
+
 def main() -> int:
     """Main entry point with subcommand dispatch."""
     if not WAGGLE_AVAILABLE:
@@ -1093,6 +1293,10 @@ def main() -> int:
     send_parser.add_argument("--reply-to", help="Reply-To address")
     send_parser.add_argument("--message-id", help="IMAP message ID to reply to (enables threading)")
     send_parser.add_argument("--rich", action="store_true", help="Enable rich HTML formatting")
+    send_parser.add_argument("--footer", action="store_true", default=True, help="Append a rotating herd-inbox adoption footer (default: on)")
+    send_parser.add_argument("--no-footer", action="store_true", help="Disable footer (overrides default)")
+    send_parser.add_argument("--footer-category", choices=["token_economics", "social_proof", "fomo", "cheeky"], help="Footer category filter")
+    send_parser.add_argument("--footer-context", choices=["announcement", "discussion"], help="Footer context filter")
     send_parser.add_argument("--skip-duplicate-check", action="store_true", help="Skip duplicate detection")
     send_parser.add_argument("--dry-run", action="store_true", help="Validate config without sending")
 
@@ -1136,6 +1340,12 @@ def main() -> int:
     move_parser.add_argument("--folder", default=DEFAULT_IMAP_FOLDER, help="Source folder (default: INBOX)")
     move_parser.add_argument("--human", action="store_true", help="Human-readable output")
 
+    # stats subcommand
+    stats_parser = subparsers.add_parser("stats", help="Show per-folder message counts (total/unread/recent)")
+    stats_parser.add_argument("--folder", help="Comma-separated folders to measure (default: all folders)")
+    stats_parser.add_argument("--days", type=int, default=7, help="Window in days for the recent count (default: 7)")
+    stats_parser.add_argument("--human", action="store_true", help="Human-readable table output")
+
     # config subcommand
     subparsers.add_parser("config", help="Validate configuration")
 
@@ -1161,6 +1371,7 @@ def main() -> int:
         "download": cmd_download,
         "flag": cmd_flag,
         "move": cmd_move,
+        "stats": cmd_stats,
         "config": cmd_config,
     }
 
