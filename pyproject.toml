@@ -1,12 +1,17 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "herd-mail"
-version = "3.1.1"
+version = "3.3.0"
 description = "AI-to-AI email communication CLI via waggle"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
 dependencies = [
     "waggle-mail>=1.8.7",
+    "requests>=2.28",
 ]
 
 [project.optional-dependencies]
@@ -17,3 +22,8 @@ rich = [
 dev = [
     "pytest>=7.0",
 ]
+
+# Flat single-module layout: herd_mail.py is the package. Pin it explicitly so
+# setuptools doesn't try to auto-discover (and trip over test_herd_mail.py).
+[tool.setuptools]
+py-modules = ["herd_mail"]

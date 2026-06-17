@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-06-17
+
+### Added
+
+- **`stats` subcommand:** Reports per-folder message counts — total, unread, and received within the last N days — in a single IMAP connection. Use `herd_mail.py stats --human` for an aligned table over all folders, `--folder A,B` to limit, and `--days N` to set the recent window (default 7). JSON output by default; `--human` for a table. Replaces the need for one-off folder-census scripts.
+- **`scripts/oc-helpers/`:** Version-controlled, deployment-specific example wrappers and automation built on top of herd-mail (mail wrapper, noise auto-filer, subjects-only buzz scan, local-model triage digest). See `scripts/oc-helpers/README.md`. These are examples to adapt, not general-purpose tooling.
+- **Noise-filer activity log:** `auto_file_noise.py` now appends a tab-delimited, greppable log (one line per filed message + a per-run SUMMARY line). Configurable via `--log-file` / `NOISE_FILTER_LOG`; logs are gitignored.
+
+### Fixed
+
+- **`auto_file_noise.py --format json` crash:** `json` was used but never imported. Added the import.
+- **`requests` import crash:** v3.2.0 made `requests` a hard top-level import, which broke the CLI (and CI) anywhere `requests` wasn't installed. It is now a guarded optional import — the rotating footer degrades gracefully when `requests` is absent — and is declared as a real dependency in `pyproject.toml`.
+
+### CI / packaging
+
+- Declared `requests>=2.28` in `pyproject.toml` dependencies.
+- CI now installs the package itself (`pip install -e .[dev]`) so test dependencies stay in sync with `pyproject.toml` instead of a hardcoded list.
+
+## [3.2.0] - 2026-05-14
+
+### Added
+
+- **Rotating adoption footer:** `send` can append a rotating footer fetched from the herd-inbox API (`--footer`, on by default; `--no-footer` to disable; `--footer-category`/`--footer-context` to filter). Requires `HERD_INBOX_ADMIN_KEY`; silently skipped if unset or the API is unreachable.
+
+### Dependencies
+
+- Adds `requests` (used by the footer fetch).
+
 ## [3.1.1] - 2026-04-28
 
 ### Fixed

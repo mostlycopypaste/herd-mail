@@ -14,12 +14,14 @@ A secure, user-friendly CLI wrapper for [waggle](https://github.com/jasonacox-sa
 - **Attachments**: Send files with security validation
 - **Duplicate Prevention**: Checks send log to prevent accidental resends
 - **Sent Folder Sync**: Saves plain text copy to IMAP Sent folder (when IMAP configured)
+- **Rotating Footer** (optional): Append a rotating adoption footer fetched from the herd-inbox API (`--footer`/`--no-footer`). Requires `HERD_INBOX_ADMIN_KEY` and `requests`; silently skipped if either is missing.
 
 ### Reading
 - **List Messages**: JSON output for AI agents, human-readable for interactive use
 - **Read Messages**: Full message content with headers, auto-marks as read
 - **Check for Unread**: Polling-friendly exit codes (0=has unread, 1=none, 2=error)
 - **Download Attachments**: Save attachments with path validation
+- **Folder Stats**: `stats` reports per-folder counts (total / unread / received in last N days) in a single IMAP pass — cheap way to answer "how's the mailbox doing?"
 
 ### Flag & Move
 - **Flag Management**: Add/remove `\Seen`, `\Answered`, `\Flagged` on messages
@@ -28,12 +30,18 @@ A secure, user-friendly CLI wrapper for [waggle](https://github.com/jasonacox-sa
 - **Auto-Flagging**: `read` marks `\Seen`; `send --message-id` marks `\Seen`+`\Answered`
 
 ### General
-- **Subcommand CLI**: `send`, `list`, `read`, `check`, `download`, `flag`, `move`, `config`
+- **Subcommand CLI**: `send`, `list`, `read`, `check`, `download`, `flag`, `move`, `stats`, `config`
 - **JSON-first Output**: Stdout for data, stderr for logging (AI-agent friendly)
 - **Environment-based**: No hardcoded credentials in scripts
 - **Security Hardened**: Email validation, path validation, injection prevention
 - **Type Safe**: Full type hints for Python 3.8+
 - **Backward Compatible**: Old `--to` syntax still works with deprecation warning
+
+### Example helpers (`scripts/oc-helpers/`)
+Version-controlled, deployment-specific automation built on top of herd-mail
+(mail wrapper, noise auto-filer with greppable activity log, subjects-only buzz
+scan, local-model triage digest). These are **adapt-me examples**, not
+general-purpose tooling — see [`scripts/oc-helpers/README.md`](scripts/oc-helpers/README.md).
 
 ## Quick Start
 
@@ -42,8 +50,10 @@ A secure, user-friendly CLI wrapper for [waggle](https://github.com/jasonacox-sa
 git clone <this-repo>
 cd herd-mail
 
-# Install dependencies
-pip install waggle-mail
+# Install dependencies (recommended: install the package + its declared deps)
+pip install -e .
+# ...or just the runtime libs directly:
+# pip install waggle-mail requests
 
 # Optional: rich formatting
 pip install markdown pygments
@@ -445,6 +455,43 @@ options:
   --human          Human-readable output
 ```
 
+### stats subcommand
+
+Report per-folder message counts in a single IMAP connection: total messages,
+unread (`UNSEEN`), and messages received within the last N days. Folders are
+auto-discovered (containers marked `\Noselect` are skipped) unless you pass
+`--folder`.
+
+```
+usage: herd_mail.py stats [-h] [--folder FOLDER] [--days DAYS] [--human]
+
+options:
+  --folder FOLDER  Comma-separated folders to measure (default: all folders)
+  --days DAYS      Window in days for the recent count (default: 7)
+  --human          Human-readable table output
+```
+
+```bash
+# All folders, last 7 days, as a table
+herd_mail.py stats --human
+
+# Specific folders, last 30 days, as JSON
+herd_mail.py stats --folder INBOX,Archive --days 30
+```
+
+JSON output shape:
+
+```json
+{
+  "days": 7,
+  "count": 2,
+  "folders": [
+    {"folder": "INBOX", "total": 4, "unread": 0, "recent": 4, "error": null},
+    {"folder": "Archive", "total": 1203, "unread": 0, "recent": 12, "error": null}
+  ]
+}
+```
+
 ## Testing
 
 Run the comprehensive test suite:
@@ -460,7 +507,7 @@ python3 test_herd_mail.py
 
 Tests mock SMTP/IMAP so they run without real credentials.
 
-**Test Coverage**: ~95% | **Tests**: 97 passing
+**Tests**: 92 passing (run on Python 3.10 / 3.12 / 3.14 in CI)
 
 ## How It Works
 

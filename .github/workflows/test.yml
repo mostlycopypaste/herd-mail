@@ -21,7 +21,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install waggle-mail pytest
+          python -m pip install --upgrade pip
+          # Install the package with its declared runtime deps + dev extras
+          # (keeps CI in sync with pyproject.toml instead of a hardcoded list)
+          pip install -e .[dev]
 
       - name: Run tests
-        run: python3 -m pytest test_herd_mail.py -v
+        run: python -m pytest test_herd_mail.py -v
