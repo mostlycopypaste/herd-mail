@@ -511,117 +511,6 @@ def format_quote_block(original: dict[str, Any]) -> str:
     return header
 
 
-def resolve_sequence_to_uids(
-    cfg: dict[str, Any],
-    messages: list[dict[str, Any]],
-    folder: str = DEFAULT_IMAP_FOLDER,
-) -> list[dict[str, Any]]:
-    """
-    Replace waggle's sequence-number "uid" fields with actual IMAP UIDs.
-
-    waggle's list_inbox() returns sequence numbers labeled as "uid".
-    This function connects via IMAP, fetches all UIDs, builds a
-    sequence-number-to-UID mapping, and patches each message dict in place.
-
-    Returns:
-        The same messages list with "uid" fields replaced by real UIDs.
-        Messages whose sequence numbers can't be mapped are left unchanged.
-    """
-    if not messages:
-        return messages
-
-    wcfg = build_waggle_config(cfg)
-    ctx = ssl.create_default_context()
-
-    try:
-        if wcfg.get("imap_tls", True):
-            conn = imaplib.IMAP4_SSL(
-                wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT),
-                ssl_context=ctx,
-            )
-        else:
-            conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
-
-        try:
-            conn.login(wcfg["user"], wcfg["password"])
-            status, _ = conn.select(folder, readonly=True)
-            if status != "OK":
-                logger.warning(f"Could not select folder {folder!r} for UID resolution")
-                return messages
-
-            for msg in messages:
-                seq = str(msg.get("uid", ""))
-                if not seq:
-                    continue
-                status, data = conn.fetch(seq, "(UID)")
-                if status == "OK" and data and data[0]:
-                    match = re.search(rb"UID\s+(\d+)", data[0])
-                    if match:
-                        msg["uid"] = match.group(1).decode()
-
-        finally:
-            try:
-                conn.logout()
-            except Exception:
-                pass
-
-    except (OSError, imaplib.IMAP4.error) as e:
-        logger.warning(f"Could not resolve UIDs (flags may not work correctly): {e}")
-
-    return messages
-
-
-def uid_to_sequence_number(
-    cfg: dict[str, Any],
-    uid: str,
-    folder: str = DEFAULT_IMAP_FOLDER,
-) -> Optional[str]:
-    """
-    Convert a real IMAP UID to its sequence number.
-
-    Waggle functions expect sequence numbers, so when the user provides a
-    real UID (from our resolved list output), we need to convert it back.
-
-    Returns the sequence number as a string, or None if not found.
-    """
-    wcfg = build_waggle_config(cfg)
-    ctx = ssl.create_default_context()
-
-    try:
-        if wcfg.get("imap_tls", True):
-            conn = imaplib.IMAP4_SSL(
-                wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT),
-                ssl_context=ctx,
-            )
-        else:
-            conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
-
-        try:
-            conn.login(wcfg["user"], wcfg["password"])
-            status, _ = conn.select(folder, readonly=True)
-            if status != "OK":
-                return None
-
-            uid_bytes = uid.encode() if isinstance(uid, str) else uid
-            status, data = conn.uid("FETCH", uid_bytes, "(UID)")
-            if status == "OK" and data and data[0]:
-                match = re.match(rb"^(\d+)\s+\(UID\s+\d+\)", data[0])
-                if match:
-                    return match.group(1).decode()
-
-            return None
-
-        finally:
-            try:
-                conn.logout()
-            except Exception:
-                pass
-
-    except (OSError, imaplib.IMAP4.error) as e:
-        logger.warning(f"Could not convert UID {uid} to sequence number: {e}")
-        return None
-
-
 def output_json(data: dict[str, Any]) -> None:
     """Write JSON to stdout. All logging must go to stderr."""
     print(json.dumps(data, indent=2, default=str))
@@ -768,11 +657,12 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if args.message_id:
         try:
             logger.info(f"Fetching original message {args.message_id} for threading...")
-            # Convert UID to sequence number for waggle
-            seq_num = uid_to_sequence_number(cfg, args.message_id, folder=DEFAULT_IMAP_FOLDER)
-            waggle_id = seq_num if seq_num else args.message_id
+            # waggle 1.9.12+ uses UID-based IMAP commands (m.uid("FETCH", ...)).
+            # Pass the real UID directly — no sequence-number conversion (see cmd_read).
+            # The old UID->sequence round-trip mapped valid UIDs to stale/wrong
+            # sequence numbers, silently dropping In-Reply-To/References headers.
             original = read_message(
-                waggle_id,
+                args.message_id,
                 folder=DEFAULT_IMAP_FOLDER,
                 config=build_waggle_config(cfg)
             )
@@ -894,8 +784,10 @@ def cmd_list(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         logger.error(f"Unexpected error listing messages: {e}")
         return 1
 
-    # Resolve waggle's sequence numbers to actual IMAP UIDs
-    messages = resolve_sequence_to_uids(cfg, messages, folder=args.folder)
+    # waggle 1.9.12+ list_inbox() returns real IMAP UIDs (m.uid("SEARCH"/"FETCH")),
+    # so no sequence-number resolution is needed. The old resolve step re-fetched
+    # each UID as if it were a sequence number, corrupting UIDs / raising
+    # "Invalid messageset" and breaking downstream flag operations.
 
     if args.unread:
         messages = [m for m in messages if m.get("unread")]
@@ -976,8 +868,7 @@ def cmd_check(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         logger.error(f"Unexpected error checking messages: {e}")
         return 2
 
-    # Resolve waggle's sequence numbers to actual IMAP UIDs
-    messages = resolve_sequence_to_uids(cfg, messages, folder=args.folder)
+    # waggle 1.9.12+ list_inbox() already returns real IMAP UIDs; no resolution needed.
 
     unread = [m for m in messages if m.get("unread")]
 
@@ -1008,13 +899,10 @@ def cmd_download(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         logger.error(f"Cannot create destination directory: {e}")
         return 1
 
-    # Convert UID to sequence number for waggle
-    seq_num = uid_to_sequence_number(cfg, args.uid, folder=args.folder)
-    waggle_id = seq_num if seq_num else args.uid
-
+    # waggle 1.9.12+ uses UID-based IMAP commands; pass the real UID directly.
     try:
         files = download_attachments(
-            waggle_id,
+            args.uid,
             folder=args.folder,
             dest_dir=str(dest_dir),
             config=build_waggle_config(cfg),
@@ -1094,13 +982,10 @@ def cmd_move(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if not validate_config(cfg, require_smtp=False, require_imap=True):
         return 1
 
-    # Convert UID to sequence number for waggle
-    seq_num = uid_to_sequence_number(cfg, args.uid, folder=args.folder)
-    waggle_id = seq_num if seq_num else args.uid
-
+    # waggle 1.9.12+ uses UID-based IMAP commands; pass the real UID directly.
     try:
         move_message(
-            waggle_id,
+            args.uid,
             args.dest_folder,
             src_folder=args.folder,
             config=build_waggle_config(cfg),
@@ -1134,9 +1019,8 @@ def get_folder_stats(
     """Collect per-folder message counts via a single IMAP connection.
 
     For each folder returns total message count, unread (UNSEEN) count, and
-    the number of messages received within the last `days` days. Reuses the
-    same direct-IMAP pattern as resolve_sequence_to_uids() so it does not
-    depend on waggle's listing layer.
+    the number of messages received within the last `days` days. Uses a direct
+    IMAP connection so it does not depend on waggle's listing layer.
 
     Args:
         cfg: Configuration dictionary.
