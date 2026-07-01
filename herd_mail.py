@@ -6,7 +6,7 @@ A secure, user-friendly wrapper for waggle that handles the full lifecycle
 of herd email communication: sending, reading, checking, and downloading.
 
 Commands:
-    herd_mail.py send --to recipient@example.com --subject "Hello" --body "Message"
+    herd_mail.py send --to recipient@example.com --subject "Hello" --body "Message" [--draft]
     herd_mail.py list [--folder INBOX] [--limit 20] [--unread] [--human]
     herd_mail.py read <uid> [--folder INBOX] [--human]
     herd_mail.py check [--folder INBOX] [--human]
@@ -39,11 +39,12 @@ import datetime
 import imaplib
 import json
 import logging
+import mimetypes
 import os
 import re
 import ssl
 import sys
-from email.utils import parseaddr
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from pathlib import Path
 from typing import Any, Optional
 
@@ -66,6 +67,10 @@ DEFAULT_NO_BODY_MESSAGE = "(No message body)"
 DEFAULT_LIST_LIMIT = 20
 
 ALLOWED_IMAP_FLAGS = {r"\Seen", r"\Answered", r"\Flagged"}
+
+# Common Drafts folder names, tried (after RFC 6154 \Drafts special-use) when
+# saving a draft via --draft. Ordered by modern prevalence.
+DRAFTS_FOLDER_CANDIDATES = ("Drafts", "INBOX.Drafts", "[Gmail]/Drafts")
 
 # Logging setup
 logging.basicConfig(
@@ -511,6 +516,236 @@ def format_quote_block(original: dict[str, Any]) -> str:
     return header
 
 
+def sanitize_header_value(value: Optional[str]) -> Optional[str]:
+    """Guard an email header value against CRLF (header-injection) attacks.
+
+    Unfolds legitimately folded headers, then rejects any remaining raw CR/LF.
+    Mirrors waggle's internal _sanitize_header so drafts get the same protection
+    as sent mail.
+    """
+    if value is None:
+        return None
+    value = re.sub(r'\r\n[ \t]+', ' ', str(value))
+    value = re.sub(r'\n[ \t]+', ' ', value)
+    if re.search(r'[\r\n]', value):
+        raise ValueError(f"Header value contains illegal newline characters: {value!r}")
+    return value
+
+
+def quote_imap_folder(folder: str) -> str:
+    """Quote an IMAP mailbox name per RFC 3501 if it contains spaces/specials.
+
+    Already-quoted names are returned unchanged (handles the reported edge case
+    of providers returning quoted vs. unquoted folder names).
+    """
+    if not folder:
+        return folder
+    if folder.startswith('"') and folder.endswith('"'):
+        return folder
+    if ' ' in folder or any(c in folder for c in ('(', ')', '{', '%', '*')):
+        return f'"{folder}"'
+    return folder
+
+
+def find_special_use_folder(conn: "imaplib.IMAP4", attr: str) -> Optional[str]:
+    """Return the mailbox flagged with an RFC 6154 special-use attribute (e.g. \\Drafts).
+
+    Returns None if the server doesn't advertise one.
+    """
+    try:
+        typ, data = conn.list()
+    except (imaplib.IMAP4.error, OSError):
+        return None
+    if typ != "OK" or not data:
+        return None
+    for raw in data:
+        if raw is None:
+            continue
+        line = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
+        if attr not in line:
+            continue
+        stripped = line.rstrip()
+        # Folder name is the final token, possibly quoted.
+        if stripped.endswith('"'):
+            name = stripped[stripped.rfind(' "') + 2:-1]
+        else:
+            name = stripped.split()[-1].strip('"')
+        if name:
+            return name
+    return None
+
+
+def render_email_bodies(body_md: str, rich: bool) -> tuple[str, Optional[str]]:
+    """Render (plain, html) from Markdown, reusing waggle's own renderers.
+
+    Reuses waggle's internal Markdown renderers so drafts look identical to sent
+    mail. Degrades gracefully (plain-only) if a given waggle build doesn't expose
+    them, so draft building never hard-crashes.
+    """
+    import waggle as _w
+
+    md_to_plain = getattr(_w, "_md_to_plain", None)
+    plain = md_to_plain(body_md) if md_to_plain else body_md
+
+    simple = getattr(_w, "_md_to_html_simple", None)
+    simple_wrap = getattr(_w, "_wrap_html_simple", None)
+
+    html: Optional[str] = None
+    if rich:
+        rich_fn = getattr(_w, "_md_to_html_rich", None)
+        rich_wrap = getattr(_w, "_wrap_html_rich", None)
+        if rich_fn and rich_wrap:
+            try:
+                html = rich_wrap(rich_fn(body_md))
+            except Exception as e:
+                # Rich rendering needs the optional 'markdown' extra; fall back to
+                # the simple renderer just like waggle.send_email() does.
+                logger.debug(f"Rich HTML unavailable, falling back to simple: {e}")
+
+    if html is None and simple and simple_wrap:
+        try:
+            html = simple_wrap(simple(body_md))
+        except Exception as e:  # never let rendering failure block the draft
+            logger.warning(f"HTML rendering failed, saving plain-text draft: {e}")
+            html = None
+
+    return plain, html
+
+
+def build_draft_message(
+    cfg: dict[str, Any],
+    *,
+    to: str,
+    subject: str,
+    body_md: str,
+    cc: Optional[str] = None,
+    reply_to: Optional[str] = None,
+    in_reply_to: Optional[str] = None,
+    references: Optional[str] = None,
+    attachments: Optional[list[str]] = None,
+    rich: bool = False,
+) -> bytes:
+    """Build an RFC822 draft message as bytes (multipart/alternative + attachments).
+
+    Mirrors the message waggle.send_email() constructs, so a draft is identical
+    to what would be sent. All header values are CRLF-sanitized to prevent
+    header injection.
+    """
+    from email.message import EmailMessage
+
+    subject     = sanitize_header_value(subject)
+    to          = sanitize_header_value(to)
+    cc          = sanitize_header_value(cc)
+    reply_to    = sanitize_header_value(reply_to)
+    in_reply_to = sanitize_header_value(in_reply_to)
+    references  = sanitize_header_value(references)
+
+    plain, html = render_email_bodies(body_md, rich)
+
+    name = cfg.get("from_name") or ""
+    from_addr = cfg.get("from_addr")
+
+    msg = EmailMessage()
+    msg["From"] = formataddr((name, from_addr)) if name else from_addr
+    msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+
+    msg.set_content(plain)
+    if html:
+        msg.add_alternative(html, subtype="html")
+
+    for path in attachments or []:
+        p = Path(path)
+        if not p.exists():
+            logger.warning(f"Attachment not found, skipping: {path}")
+            continue
+        ctype, _ = mimetypes.guess_type(str(p))
+        maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+        with open(p, "rb") as f:
+            data = f.read()
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=p.name)
+
+    return msg.as_bytes()
+
+
+def imap_append_draft(
+    cfg: dict[str, Any],
+    msg_bytes: bytes,
+    folder: Optional[str] = None,
+) -> Optional[str]:
+    """APPEND a composed message to the IMAP Drafts folder with the \\Draft flag.
+
+    Mirrors waggle's Sent-folder sync (_imap_append_sent) but targets Drafts and
+    sets \\Draft instead of \\Seen. Uses a single IMAP connection: if ``folder``
+    is given it is used directly, otherwise the Drafts mailbox is auto-detected
+    via the RFC 6154 \\Drafts special-use flag, then common folder names.
+
+    Returns the folder name used, or None on failure.
+    """
+    if not msg_bytes or not isinstance(msg_bytes, bytes):
+        logger.warning("Invalid message bytes for draft append")
+        return None
+
+    wcfg = build_waggle_config(cfg)
+    ctx = ssl.create_default_context()
+
+    try:
+        if wcfg.get("imap_tls", True):
+            conn = imaplib.IMAP4_SSL(
+                wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT),
+                ssl_context=ctx,
+            )
+        else:
+            conn = imaplib.IMAP4(wcfg["imap_host"], wcfg.get("imap_port", DEFAULT_IMAP_PORT))
+    except (OSError, imaplib.IMAP4.error) as e:
+        logger.error(f"Could not connect to IMAP to save draft: {e}")
+        return None
+
+    try:
+        conn.login(wcfg["user"], wcfg["password"])
+
+        if folder:
+            candidates = [folder]
+        else:
+            special = find_special_use_folder(conn, r"\Drafts")
+            candidates = ([special] if special else []) + list(DRAFTS_FOLDER_CANDIDATES)
+
+        for candidate in candidates:
+            try:
+                quoted = quote_imap_folder(candidate)
+                # Verify the mailbox exists/selectable before appending.
+                status, _ = conn.select(quoted, readonly=True)
+                if status != "OK":
+                    continue
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                status, _ = conn.append(quoted, r"(\Draft)", None, msg_bytes)
+                if status == "OK":
+                    return candidate
+            except (imaplib.IMAP4.error, OSError):
+                continue
+
+        logger.error("No suitable Drafts folder found for IMAP append")
+        return None
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
 def resolve_sequence_to_uids(
     cfg: dict[str, Any],
     messages: list[dict[str, Any]],
@@ -714,6 +949,10 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if not validate_config(cfg, require_smtp=True):
         return 1
 
+    # Saving a draft requires IMAP (the message is APPENDed to Drafts).
+    if args.draft and not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
     # Get body content
     body: Optional[str] = None
     if args.body_file:
@@ -742,8 +981,8 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         else:
             body = DEFAULT_NO_BODY_MESSAGE
 
-    # Check for duplicates (unless skipped)
-    if not args.skip_duplicate_check:
+    # Check for duplicates (unless skipped, or drafting — a draft isn't a send)
+    if not args.skip_duplicate_check and not args.draft:
         try:
             if check_recently_sent(
                 args.to,
@@ -789,6 +1028,38 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
         except Exception as e:
             logger.warning(f"Unexpected error fetching message: {e}")
             logger.info("  Continuing without threading headers...")
+
+    # --draft: save to the IMAP Drafts folder instead of sending (mirrors the
+    # existing Sent-folder sync). Threading headers/quoted original are kept so a
+    # drafted reply threads correctly; footer + duplicate check are skipped since
+    # nothing is being sent.
+    if args.draft:
+        try:
+            msg_bytes = build_draft_message(
+                cfg,
+                to=args.to,
+                subject=args.subject,
+                body_md=body,
+                cc=args.cc,
+                reply_to=args.reply_to,
+                in_reply_to=in_reply_to,
+                references=references,
+                attachments=args.attachment,
+                rich=args.rich,
+            )
+        except ValueError as e:
+            logger.error(f"Invalid draft content: {e}")
+            return 1
+        except Exception as e:
+            logger.error(f"Failed to build draft message: {e}")
+            return 1
+
+        saved_folder = imap_append_draft(cfg, msg_bytes, folder=args.draft_folder)
+        if not saved_folder:
+            logger.error("Failed to save draft to Drafts folder")
+            return 1
+        logger.info(f"Draft saved to {saved_folder} (not sent)")
+        return 0
 
     # Append footer (default: on, unless --no-footer)
     if not args.no_footer:
@@ -1311,6 +1582,8 @@ def main() -> int:
     send_parser.add_argument("--footer-context", choices=["announcement", "discussion"], help="Footer context filter")
     send_parser.add_argument("--skip-duplicate-check", action="store_true", help="Skip duplicate detection")
     send_parser.add_argument("--dry-run", action="store_true", help="Validate config without sending")
+    send_parser.add_argument("--draft", action="store_true", help="Save to the IMAP Drafts folder instead of sending (requires IMAP)")
+    send_parser.add_argument("--draft-folder", help="Explicit Drafts folder name (default: auto-detect via \\Drafts special-use)")
 
     # list subcommand
     list_parser = subparsers.add_parser("list", help="List messages in a folder")
