@@ -1578,6 +1578,292 @@ class TestWaggleStubs(unittest.TestCase):
         self.assertTrue(hasattr(hm, 'clear_flags'))
 
 
+# ---------------------------------------------------------------------------
+# Issue #6: `send --draft` saves the composed email to the IMAP Drafts folder
+# (APPEND with \Draft) instead of sending it, mirroring the Sent-folder sync.
+# ---------------------------------------------------------------------------
+from email import message_from_bytes  # noqa: E402
+
+
+class TestDraftHelpersUnit(unittest.TestCase):
+    """Unit: message building + folder helpers behave correctly."""
+
+    def _cfg(self):
+        return {
+            "from_addr": "me@example.com", "from_name": "Me",
+            "imap_host": "imap.example.com", "imap_port": 993, "imap_tls": True,
+            "smtp_host": "smtp.example.com", "smtp_port": 465,
+            "smtp_user": "me@example.com", "smtp_pass": "secret", "use_tls": True,
+        }
+
+    def test_build_draft_headers_and_parts(self):
+        """Built draft has the expected headers and a text/plain body."""
+        raw = hm.build_draft_message(
+            self._cfg(), to="alice@example.com", subject="Hi",
+            body_md="Hello there", cc="bob@example.com",
+            in_reply_to="<orig@example.com>", references="<orig@example.com>",
+        )
+        msg = message_from_bytes(raw)
+        self.assertEqual(msg["To"], "alice@example.com")
+        self.assertEqual(msg["Cc"], "bob@example.com")
+        self.assertEqual(msg["Subject"], "Hi")
+        self.assertEqual(msg["In-Reply-To"], "<orig@example.com>")
+        self.assertEqual(msg["References"], "<orig@example.com>")
+        self.assertTrue(msg["Message-ID"])
+        self.assertTrue(msg["Date"])
+        self.assertIn("me@example.com", msg["From"])
+        body_types = [p.get_content_type() for p in msg.walk()]
+        self.assertIn("text/plain", body_types)
+
+    def test_build_draft_rich_adds_html_alternative(self):
+        """--rich draft includes a multipart/alternative with an HTML part."""
+        raw = hm.build_draft_message(
+            self._cfg(), to="alice@example.com", subject="Hi",
+            body_md="**Bold**\n\n- a\n- b", rich=True,
+        )
+        types = [p.get_content_type() for p in message_from_bytes(raw).walk()]
+        self.assertIn("text/plain", types)
+        self.assertIn("text/html", types)
+
+    def test_quote_imap_folder(self):
+        """Folder names with spaces get quoted; already-quoted stay as-is."""
+        self.assertEqual(hm.quote_imap_folder("Drafts"), "Drafts")
+        self.assertEqual(hm.quote_imap_folder("Sent Items"), '"Sent Items"')
+        self.assertEqual(hm.quote_imap_folder('"X"'), '"X"')
+
+    def test_find_special_use_folder(self):
+        """RFC 6154 \\Drafts special-use folder is parsed from LIST output."""
+        conn = MagicMock()
+        conn.list.return_value = ("OK", [b'(\\HasNoChildren \\Drafts) "/" "Drafts"'])
+        self.assertEqual(hm.find_special_use_folder(conn, r"\Drafts"), "Drafts")
+
+    def test_find_special_use_folder_unquoted(self):
+        """Unquoted folder names in LIST output are handled too."""
+        conn = MagicMock()
+        conn.list.return_value = ("OK", [b'(\\Drafts) "/" Drafts'])
+        self.assertEqual(hm.find_special_use_folder(conn, r"\Drafts"), "Drafts")
+
+    def test_find_special_use_folder_absent(self):
+        """Returns None when no special-use folder is advertised."""
+        conn = MagicMock()
+        conn.list.return_value = ("OK", [b'(\\HasNoChildren) "/" "INBOX"'])
+        self.assertIsNone(hm.find_special_use_folder(conn, r"\Drafts"))
+
+
+class TestDraftSecurity(unittest.TestCase):
+    """Security: header-injection defence + TLS credential handling."""
+
+    def _cfg(self):
+        return {
+            "from_addr": "me@example.com", "from_name": "Me",
+            "imap_host": "imap.example.com", "imap_port": 993, "imap_tls": True,
+            "smtp_host": "smtp.example.com", "smtp_port": 465,
+            "smtp_user": "me@example.com", "smtp_pass": "secret", "use_tls": True,
+        }
+
+    def test_header_injection_rejected(self):
+        """A CRLF-injected subject is rejected (no smuggled Bcc header)."""
+        with self.assertRaises(ValueError):
+            hm.build_draft_message(
+                self._cfg(), to="alice@example.com",
+                subject="Hi\nBcc: evil@example.com", body_md="x",
+            )
+
+    def test_sanitize_header_value_rejects_newline(self):
+        self.assertEqual(hm.sanitize_header_value("Clean Subject"), "Clean Subject")
+        with self.assertRaises(ValueError):
+            hm.sanitize_header_value("bad\r\nHeader: x")
+
+    def test_draft_append_uses_tls_by_default(self):
+        """Draft save uses IMAP4_SSL (encrypted) — credentials never sent in clear."""
+        conn = MagicMock()
+        conn.login.return_value = ("OK", [b""])
+        conn.list.return_value = ("OK", [b'(\\Drafts) "/" "Drafts"'])
+        conn.select.return_value = ("OK", [b"1"])
+        conn.append.return_value = ("OK", [b"[APPENDUID 1 5]"])
+        with patch('herd_mail.imaplib.IMAP4_SSL', return_value=conn) as mssl, \
+             patch('herd_mail.imaplib.IMAP4') as mplain:
+            folder = hm.imap_append_draft(self._cfg(), b"raw")
+        self.assertEqual(folder, "Drafts")
+        mssl.assert_called_once()
+        mplain.assert_not_called()
+        # APPEND carries the \Draft flag, not \Seen.
+        self.assertEqual(conn.append.call_args[0][1], r"(\Draft)")
+
+
+class TestDraftPerformance(unittest.TestCase):
+    """Performance: draft save opens exactly one IMAP connection (no per-candidate connect)."""
+
+    def _cfg(self):
+        return {
+            "from_addr": "me@example.com", "from_name": "Me",
+            "imap_host": "imap.example.com", "imap_port": 993, "imap_tls": True,
+            "smtp_host": "smtp.example.com", "smtp_port": 465,
+            "smtp_user": "me@example.com", "smtp_pass": "secret", "use_tls": True,
+        }
+
+    def test_single_connection_reused_across_candidates(self):
+        """One connection is reused while probing candidate folders (no N connects)."""
+        conn = MagicMock()
+        conn.login.return_value = ("OK", [b""])
+        conn.list.return_value = ("OK", [])  # no special-use → fall to candidates
+        # First candidate ("Drafts") fails select, second ("INBOX.Drafts") works.
+        conn.select.side_effect = [("NO", [b""]), ("OK", [b"1"])]
+        conn.append.return_value = ("OK", [b"[APPENDUID 1 5]"])
+        with patch('herd_mail.imaplib.IMAP4_SSL', return_value=conn) as mssl:
+            folder = hm.imap_append_draft(self._cfg(), b"raw")
+        self.assertEqual(folder, "INBOX.Drafts")
+        mssl.assert_called_once()  # exactly one connection despite two candidates
+
+
+class TestDraftRetry(unittest.TestCase):
+    """Retry: PLACEHOLDER.
+
+    herd-mail does not implement IMAP retry/backoff (delegated to waggle); the
+    draft path adds none. This documents the intentional no-retry contract: a
+    connection failure returns None after a single attempt (surfaced by cmd_send
+    as a clean exit 1), which is what a future retry wrapper would wrap.
+    """
+
+    def _cfg(self):
+        return {
+            "from_addr": "me@example.com", "from_name": "Me",
+            "imap_host": "imap.example.com", "imap_port": 993, "imap_tls": True,
+            "smtp_host": "smtp.example.com", "smtp_port": 465,
+            "smtp_user": "me@example.com", "smtp_pass": "secret", "use_tls": True,
+        }
+
+    def test_connect_failure_returns_none_single_attempt(self):
+        with patch('herd_mail.imaplib.IMAP4_SSL',
+                   side_effect=OSError("Connection refused")) as mssl:
+            result = hm.imap_append_draft(self._cfg(), b"raw")
+        self.assertIsNone(result)
+        mssl.assert_called_once()  # no internal retry loop
+
+
+class TestDraftSendEnv(unittest.TestCase):
+    """Shared env harness for cmd_send --draft integration/functional tests."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+
+class TestDraftSendIntegration(TestDraftSendEnv):
+    """Integration: cmd_send --draft appends to Drafts and does NOT send."""
+
+    @patch('herd_mail.imap_append_draft')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_draft_appends_and_does_not_send(self, mock_check, mock_send, mock_append):
+        mock_append.return_value = "Drafts"
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'alice@example.com',
+                                '--subject', 'Hi', '--body', 'Hello', '--draft']):
+            with patch('sys.stdout', StringIO()):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        mock_append.assert_called_once()
+        mock_send.assert_not_called()          # SMTP send is bypassed
+        mock_check.assert_not_called()         # duplicate check skipped for drafts
+        # The bytes appended parse as a real message addressed to alice.
+        appended_bytes = mock_append.call_args[0][1]
+        self.assertIn(b"alice@example.com", appended_bytes)
+
+    @patch('herd_mail.imap_append_draft')
+    @patch('herd_mail.read_message')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_draft_reply_carries_threading(self, mock_check, mock_send,
+                                           mock_read, mock_append):
+        """A drafted reply (--message-id) keeps In-Reply-To threading headers."""
+        mock_append.return_value = "Drafts"
+        mock_read.return_value = {
+            "message_id": "<orig@example.com>",
+            "reply_references": "<orig@example.com>",
+            "subject": "Original", "from_raw": "Alice <alice@example.com>",
+            "date": "Tue, 01 Apr 2026 10:30:00 +0000", "body_plain": "Body.",
+        }
+        with patch('sys.argv', ['herd_mail.py', 'send', '--message-id', '5',
+                                '--to', 'alice@example.com', '--subject', 'Re: Original',
+                                '--body', 'Reply', '--draft']):
+            with patch('sys.stdout', StringIO()):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        appended = message_from_bytes(mock_append.call_args[0][1])
+        self.assertEqual(appended["In-Reply-To"], "<orig@example.com>")
+
+
+class TestDraftSendFunctional(TestDraftSendEnv):
+    """Functional: golden draft-save plus error paths."""
+
+    @patch('herd_mail.imap_append_draft')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_golden_draft_saved(self, mock_check, mock_send, mock_append):
+        mock_append.return_value = "Drafts"
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'alice@example.com',
+                                '--subject', 'Hi', '--body', 'Hello', '--draft']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+
+    @patch('herd_mail.imap_append_draft')
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_draft_append_failure_returns_error(self, mock_check, mock_send, mock_append):
+        """If no Drafts folder is found, cmd_send fails cleanly (exit 1)."""
+        mock_append.return_value = None
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'alice@example.com',
+                                '--subject', 'Hi', '--body', 'Hello', '--draft']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+        mock_send.assert_not_called()
+
+    @patch('herd_mail.send_email')
+    def test_draft_requires_imap(self, mock_send):
+        """--draft without IMAP configured is an error (exit 1), nothing sent."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'alice@example.com',
+                                '--subject', 'Hi', '--body', 'Hello', '--draft']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+        mock_send.assert_not_called()
+
+
+class TestDraftSendFrame(TestDraftSendEnv):
+    """Frame/smoke: the --draft flag parses and dispatches without crashing."""
+
+    def test_draft_helpers_importable(self):
+        self.assertTrue(callable(hm.build_draft_message))
+        self.assertTrue(callable(hm.imap_append_draft))
+
+    @patch('herd_mail.imap_append_draft')
+    @patch('herd_mail.check_recently_sent')
+    @patch('herd_mail.send_email')
+    def test_draft_smoke(self, mock_send, mock_check, mock_append):
+        mock_append.return_value = "Drafts"
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'a@example.com',
+                                '--subject', 'S', '--body', 'b', '--draft']):
+            with patch('sys.stdout', StringIO()):
+                self.assertEqual(hm.main(), 0)
+
+
 def run_basic_tests():
     """Run basic tests without pytest."""
     print("Running basic validation tests...")

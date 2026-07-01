@@ -357,7 +357,7 @@ Validate configuration without connecting
 usage: herd_mail.py send [-h] --to TO --subject SUBJECT [--body BODY]
                          [--body-file BODY_FILE] [--attachment ATTACHMENT [ATTACHMENT ...]]
                          [--cc CC] [--reply-to REPLY_TO] [--message-id MESSAGE_ID]
-                         [--rich] [--skip-duplicate-check]
+                         [--rich] [--skip-duplicate-check] [--draft] [--draft-folder DRAFT_FOLDER]
 
 options:
   --to TO               Recipient email address
@@ -374,7 +374,21 @@ options:
   --rich                Enable rich HTML formatting
   --skip-duplicate-check
                         Skip checking for recent duplicates
+  --draft               Save to the IMAP Drafts folder instead of sending (requires IMAP)
+  --draft-folder DRAFT_FOLDER
+                        Explicit Drafts folder name (default: auto-detect via \Drafts special-use)
 ```
+
+Save a draft for later review instead of sending it:
+
+```bash
+herd_mail.py send --to alice@example.com --subject "WIP" --body "Draft body" --draft
+```
+
+The message is IMAP-APPENDed to the Drafts folder with the `\Draft` flag
+(auto-detected via the RFC 6154 `\Drafts` special-use flag, then common folder
+names, or `--draft-folder` to override). Threading headers and `--rich`
+formatting work the same as a normal send.
 
 ### list subcommand
 

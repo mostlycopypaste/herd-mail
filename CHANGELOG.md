@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`send --draft` (#6):** Save a composed email to the IMAP Drafts folder
+  instead of sending it. The message is IMAP-APPENDed with the `\Draft` flag,
+  mirroring the existing Sent-folder sync. The Drafts mailbox is auto-detected
+  via the RFC 6154 `\Drafts` special-use flag, then common folder names
+  (`Drafts`, `INBOX.Drafts`, `[Gmail]/Drafts`), or set explicitly with
+  `--draft-folder`. Threading headers (`--message-id`) and `--rich` HTML work
+  the same as a normal send; header values are CRLF-sanitized against injection.
+
 ## [3.3.0] - 2026-06-17
 
 ### Added
