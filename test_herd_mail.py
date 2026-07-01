@@ -1578,6 +1578,228 @@ class TestWaggleStubs(unittest.TestCase):
         self.assertTrue(hasattr(hm, 'clear_flags'))
 
 
+# ---------------------------------------------------------------------------
+# Issue #11: --rich Markdown lists not preceded by a blank line render as inline
+# text. ensure_blank_line_before_lists() inserts the missing CommonMark blank
+# line before a list so it renders as <ul><li> in the --rich HTML path.
+# ---------------------------------------------------------------------------
+class TestEnsureBlankLineBeforeListsUnit(unittest.TestCase):
+    """Unit: the blank-line insertion covers the reported case and edge cases."""
+
+    def test_reported_case(self):
+        """Header directly followed by a bullet list gains a blank line."""
+        md = "**Header:**\n- Item 1\n- Item 2"
+        self.assertEqual(
+            hm.ensure_blank_line_before_lists(md),
+            "**Header:**\n\n- Item 1\n- Item 2",
+        )
+
+    def test_already_separated_unchanged(self):
+        """A correctly separated list is left untouched (no double blank)."""
+        md = "**Header:**\n\n- Item 1\n- Item 2"
+        self.assertEqual(hm.ensure_blank_line_before_lists(md), md)
+
+    def test_consecutive_items_single_blank(self):
+        """Only the first item gets a preceding blank line, not every item."""
+        md = "Head:\n- a\n- b\n- c"
+        self.assertEqual(hm.ensure_blank_line_before_lists(md), "Head:\n\n- a\n- b\n- c")
+
+    def test_ordered_list(self):
+        """Ordered (1. / 2)) lists are handled too."""
+        self.assertEqual(
+            hm.ensure_blank_line_before_lists("Steps:\n1. First\n2. Second"),
+            "Steps:\n\n1. First\n2. Second",
+        )
+
+    def test_star_and_plus_markers(self):
+        """'*' and '+' bullet markers are recognised."""
+        self.assertEqual(
+            hm.ensure_blank_line_before_lists("Note:\n* a"),
+            "Note:\n\n* a",
+        )
+
+    def test_horizontal_rule_untouched(self):
+        """A '---' thematic break is not a list item and must not gain a blank."""
+        md = "text\n---\nmore"
+        self.assertEqual(hm.ensure_blank_line_before_lists(md), md)
+
+    def test_quote_banner_untouched(self):
+        """The reply quote banner ('-----Original Message-----') is untouched."""
+        md = "Reply\n-----Original Message-----\nFrom: x"
+        self.assertEqual(hm.ensure_blank_line_before_lists(md), md)
+
+    def test_indented_continuation_untouched(self):
+        """Indented list continuation lines don't trigger spurious blanks."""
+        md = "- a\n  cont\n- b"
+        self.assertEqual(hm.ensure_blank_line_before_lists(md), md)
+
+    def test_empty_input(self):
+        """Empty / falsy input returns unchanged."""
+        self.assertEqual(hm.ensure_blank_line_before_lists(""), "")
+
+    def test_list_at_start_unchanged(self):
+        """A list with nothing before it needs no blank line."""
+        md = "- a\n- b"
+        self.assertEqual(hm.ensure_blank_line_before_lists(md), md)
+
+
+class TestEnsureBlankLineBeforeListsSecurity(unittest.TestCase):
+    """Security: the transform only inserts blank lines — never mutates content."""
+
+    def test_no_content_dropped_or_reordered(self):
+        """Every non-empty line survives, in order; only blank lines are added."""
+        md = "H1\n- a\nfoo@example.com\n> quote\n* b\ntail"
+        out = hm.ensure_blank_line_before_lists(md)
+        strip = lambda s: [ln for ln in s.split("\n") if ln != ""]
+        self.assertEqual(strip(out), strip(md))
+
+    def test_idempotent(self):
+        """Re-running the transform makes no further changes (no unbounded growth)."""
+        md = "**Header:**\n- Item 1\n- Item 2"
+        once = hm.ensure_blank_line_before_lists(md)
+        twice = hm.ensure_blank_line_before_lists(once)
+        self.assertEqual(once, twice)
+
+    def test_does_not_introduce_crlf_or_strip_chars(self):
+        """Transform introduces only '\\n' blanks; no CR injection, no char loss."""
+        md = "Header\n- item with <b>html</b> & symbols"
+        out = hm.ensure_blank_line_before_lists(md)
+        self.assertNotIn("\r", out)
+        self.assertIn("<b>html</b> & symbols", out)
+
+
+class TestEnsureBlankLineBeforeListsPerformance(unittest.TestCase):
+    """Performance: single linear pass, bounded output, no quadratic growth."""
+
+    def test_large_input_bounded(self):
+        """A large body processes in one pass; output stays within ~2x the lines."""
+        md = "\n".join(f"Para {i}\n- item {i}" for i in range(5000))
+        out = hm.ensure_blank_line_before_lists(md)
+        in_lines = md.count("\n") + 1
+        out_lines = out.count("\n") + 1
+        # At most one blank inserted per list-start; never more than doubles.
+        self.assertLessEqual(out_lines, in_lines * 2)
+
+
+class TestEnsureBlankLineBeforeListsRetry(unittest.TestCase):
+    """Retry: PLACEHOLDER.
+
+    ensure_blank_line_before_lists() is a pure, in-memory string transform with
+    no IMAP/SMTP/network I/O, so there is nothing to retry with backoff. This
+    placeholder documents that and asserts determinism (same input -> same
+    output on repeated calls), the property a retry would rely on.
+    """
+
+    def test_deterministic_no_io(self):
+        md = "Header\n- a\n- b"
+        self.assertEqual(
+            hm.ensure_blank_line_before_lists(md),
+            hm.ensure_blank_line_before_lists(md),
+        )
+
+
+class TestRichListSendEnv(unittest.TestCase):
+    """Shared env harness for the cmd_send integration/functional tests."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+        self.clear_env()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+
+class TestRichListSendIntegration(TestRichListSendEnv):
+    """Integration: cmd_send only rewrites the body when --rich is set."""
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_rich_inserts_blank_line(self, mock_check, mock_send):
+        """--rich body reaches send_email with the blank line inserted."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'a@example.com',
+                                '--subject', 'S', '--rich',
+                                '--body', '**Header:**\n- Item 1\n- Item 2']):
+            result = hm.main()
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            mock_send.call_args[1]['body_md'],
+            "**Header:**\n\n- Item 1\n- Item 2",
+        )
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_plain_body_unchanged(self, mock_check, mock_send):
+        """Without --rich the body is passed through verbatim (no rewrite)."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'a@example.com',
+                                '--subject', 'S',
+                                '--body', '**Header:**\n- Item 1\n- Item 2']):
+            result = hm.main()
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            mock_send.call_args[1]['body_md'],
+            "**Header:**\n- Item 1\n- Item 2",
+        )
+
+
+class TestRichListSendFunctional(TestRichListSendEnv):
+    """Functional: golden --rich send plus a no-list no-op body."""
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_golden_rich_send(self, mock_check, mock_send):
+        """End-to-end --rich send succeeds and the list is separated."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'a@example.com',
+                                '--subject', 'S', '--rich',
+                                '--body', 'Steps:\n1. one\n2. two']):
+            result = hm.main()
+        self.assertEqual(result, 0)
+        self.assertIn("Steps:\n\n1. one", mock_send.call_args[1]['body_md'])
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_rich_body_without_lists_unchanged(self, mock_check, mock_send):
+        """A --rich body containing no lists is not modified."""
+        mock_check.return_value = False
+        mock_send.return_value = None
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'a@example.com',
+                                '--subject', 'S', '--rich',
+                                '--body', 'Just a paragraph.']):
+            result = hm.main()
+        self.assertEqual(result, 0)
+        self.assertEqual(mock_send.call_args[1]['body_md'], "Just a paragraph.")
+
+
+class TestRichListSendFrame(TestRichListSendEnv):
+    """Frame/smoke: the --rich send path dispatches without crashing."""
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_rich_send_smoke(self, mock_check, mock_send):
+        mock_check.return_value = False
+        mock_send.return_value = None
+        self.assertTrue(callable(hm.ensure_blank_line_before_lists))
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'a@example.com',
+                                '--subject', 'S', '--rich', '--body', 'x\n- y']):
+            self.assertEqual(hm.main(), 0)
+
+
 def run_basic_tests():
     """Run basic tests without pytest."""
     print("Running basic validation tests...")
