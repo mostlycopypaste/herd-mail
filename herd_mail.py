@@ -356,6 +356,42 @@ def decode_escape_sequences(text: str) -> str:
     return result
 
 
+# Matches a Markdown list item at the start of a line: unordered ("- ", "* ",
+# "+ ") or ordered ("1. ", "2) "). Requires whitespace + content after the
+# marker, so horizontal rules ("---") and quote banners ("-----Original ...")
+# — which have no space after the dashes — are deliberately NOT matched.
+_LIST_ITEM_RE = re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+\S')
+
+
+def ensure_blank_line_before_lists(text: str) -> str:
+    """Insert a blank line before a Markdown list not already preceded by one.
+
+    CommonMark requires a blank line between a paragraph and a following list;
+    without it a line like ``- Item`` renders as literal inline text instead of
+    an HTML ``<ul><li>``. This inserts the missing blank line so ``--rich`` HTML
+    renders lists correctly (issue #11), while leaving untouched:
+
+    - lists that are already correctly separated,
+    - consecutive list items (a blank line is only added before the FIRST item),
+    - indented continuation lines (to avoid breaking nested list content),
+    - non-list lines such as ``---`` rules or ``-----Original Message-----``.
+    """
+    if not text:
+        return text
+
+    lines = text.split('\n')
+    out: list[str] = []
+    for line in lines:
+        if _LIST_ITEM_RE.match(line) and out:
+            prev = out[-1]
+            # Only insert when the previous line is a non-blank, non-indented,
+            # non-list line (i.e. the end of a paragraph directly above a list).
+            if prev.strip() and not prev[:1].isspace() and not _LIST_ITEM_RE.match(prev):
+                out.append('')
+        out.append(line)
+    return '\n'.join(out)
+
+
 def parse_port(port_str: str, default: int, port_name: str = "port") -> int:
     """
     Parse port number from string with validation.
@@ -630,6 +666,11 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
                 return 1
         else:
             body = DEFAULT_NO_BODY_MESSAGE
+
+    # --rich: ensure Markdown lists are preceded by a blank line so they render
+    # as real HTML lists rather than inline text (CommonMark block rule, #11).
+    if args.rich and body:
+        body = ensure_blank_line_before_lists(body)
 
     # Check for duplicates (unless skipped)
     if not args.skip_duplicate_check:
