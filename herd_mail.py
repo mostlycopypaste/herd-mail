@@ -768,11 +768,11 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     if args.message_id:
         try:
             logger.info(f"Fetching original message {args.message_id} for threading...")
-            # Convert UID to sequence number for waggle
-            seq_num = uid_to_sequence_number(cfg, args.message_id, folder=DEFAULT_IMAP_FOLDER)
-            waggle_id = seq_num if seq_num else args.message_id
+            # waggle's read_message expects a real IMAP UID — pass it directly.
+            # (Previous code converted UID→sequence number, but read_message
+            # uses m.uid("FETCH", uid), so the conversion was backwards.)
             original = read_message(
-                waggle_id,
+                args.message_id,
                 folder=DEFAULT_IMAP_FOLDER,
                 config=build_waggle_config(cfg)
             )
