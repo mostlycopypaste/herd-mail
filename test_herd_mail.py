@@ -1285,6 +1285,136 @@ class TestCmdMove(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+@patch('herd_mail.search_messages')
+class TestSearchCommands(unittest.TestCase):
+    """Test the search subcommand."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    def test_search_json(self, mock_search):
+        """Test search outputs JSON."""
+        mock_search.return_value = [
+            {"uid": "42", "from_addr": "sam@jasonacox.com", "from_name": "Sam",
+             "subject": "Hello", "date": "Sat, 11 Jul 2026", "unread": True, "folder": "INBOX"},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'search', '--from', 'sam@jasonacox.com']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["messages"][0]["uid"], "42")
+        mock_search.assert_called_once()
+
+    def test_search_human(self, mock_search):
+        """Test search with --human output."""
+        mock_search.return_value = [
+            {"uid": "42", "from_addr": "sam@jasonacox.com", "from_name": "Sam",
+             "subject": "Hello", "date": "Sat, 11 Jul 2026", "unread": True, "folder": "INBOX"},
+        ]
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'search', '--subject', 'Hello', '--human']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        output = captured.getvalue()
+        self.assertIn("UID", output)
+        self.assertIn("Sam", output)
+        self.assertIn("Hello", output)
+
+    def test_search_no_results(self, mock_search):
+        """Test search with no results."""
+        mock_search.return_value = []
+        captured = StringIO()
+        with patch('sys.argv', ['herd_mail.py', 'search', '--text', 'nonexistent']):
+            with patch('sys.stdout', captured):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        data = json.loads(captured.getvalue())
+        self.assertEqual(data["count"], 0)
+
+    def test_search_connection_error(self, mock_search):
+        """Test search handles errors."""
+        mock_search.side_effect = ConnectionError("Connection refused")
+        with patch('sys.argv', ['herd_mail.py', 'search', '--from', 'test@example.com']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+    def test_search_no_imap(self, mock_search):
+        """Test search fails without IMAP config."""
+        del os.environ["WAGGLE_IMAP_HOST"]
+        with patch('sys.argv', ['herd_mail.py', 'search', '--from', 'test@example.com']):
+            result = hm.main()
+        self.assertEqual(result, 1)
+
+
+class TestNoSaveSent(unittest.TestCase):
+    """Test --no-save-sent flag on send."""
+
+    def setUp(self):
+        self.clear_env()
+        os.environ["WAGGLE_HOST"] = "smtp.example.com"
+        os.environ["WAGGLE_USER"] = "user@example.com"
+        os.environ["WAGGLE_PASS"] = "secret"
+        os.environ["WAGGLE_FROM"] = "user@example.com"
+        os.environ["WAGGLE_IMAP_HOST"] = "imap.example.com"
+        self.waggle_patch = patch('herd_mail.WAGGLE_AVAILABLE', True)
+        self.waggle_patch.start()
+
+    def tearDown(self):
+        self.waggle_patch.stop()
+
+    def clear_env(self):
+        for key in list(os.environ.keys()):
+            if key.startswith("WAGGLE_"):
+                del os.environ[key]
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_no_save_sent_passed_through(self, mock_check, mock_send):
+        """Test --no-save-sent passes save_sent=False to send_email."""
+        mock_check.return_value = False
+        mock_send.return_value = True
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'test@example.com',
+                               '--subject', 'Test', '--body', 'Hello', '--no-save-sent']):
+            with patch('sys.stdout', StringIO()):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        call_kwargs = mock_send.call_args[1]
+        self.assertFalse(call_kwargs["save_sent"])
+
+    @patch('herd_mail.send_email')
+    @patch('herd_mail.check_recently_sent')
+    def test_save_sent_default_true(self, mock_check, mock_send):
+        """Test save_sent defaults to True without --no-save-sent."""
+        mock_check.return_value = False
+        mock_send.return_value = True
+        with patch('sys.argv', ['herd_mail.py', 'send', '--to', 'test@example.com',
+                               '--subject', 'Test', '--body', 'Hello']):
+            with patch('sys.stdout', StringIO()):
+                result = hm.main()
+        self.assertEqual(result, 0)
+        call_kwargs = mock_send.call_args[1]
+        self.assertTrue(call_kwargs["save_sent"])
+
+
 class TestAutoFlagOnRead(unittest.TestCase):
     r"""Test automatic \Seen marking in cmd_read."""
 
