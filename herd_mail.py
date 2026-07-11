@@ -141,7 +141,7 @@ try:
     from waggle import (
         send_email, check_recently_sent, read_message,
         list_inbox, download_attachments, move_message,
-        set_flags, clear_flags,
+        set_flags, clear_flags, search_messages,
     )
     WAGGLE_AVAILABLE = True
 except ImportError as e:
@@ -166,6 +166,15 @@ except ImportError as e:
         raise RuntimeError("waggle not installed")
 
     def move_message(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def set_flags(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def clear_flags(*args, **kwargs):
+        raise RuntimeError("waggle not installed")
+
+    def search_messages(*args, **kwargs):
         raise RuntimeError("waggle not installed")
 
 
@@ -748,11 +757,15 @@ def cmd_send(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
             references=references,
             attachments=args.attachment,
             rich=args.rich,
+            save_sent=not args.no_save_sent,
             config=build_waggle_config(cfg),
         )
 
         logger.info("Email sent successfully!")
-        logger.info("  (Saved to Sent folder via waggle)")
+        if not args.no_save_sent:
+            logger.info("  (Saved to Sent folder via waggle)")
+        else:
+            logger.info("  (Sent folder sync skipped --no-save-sent)")
 
         if args.message_id and cfg.get("imap_host"):
             try:
@@ -1052,6 +1065,77 @@ def cmd_move(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
     return 0
 
 
+def output_human_search(data: dict[str, Any]) -> None:
+    """Write human-readable search results to stdout."""
+    messages = data.get("messages", [])
+    if not messages:
+        print("No messages found.")
+        return
+
+    print(f"{'UID':<8} {'Folder':<20} {'From':<30} {'Subject':<40} {'Date':<20} {'Status'}")
+    print("-" * 130)
+    for msg in messages:
+        status = "*" if msg.get("unread") else " "
+        from_name = msg.get("from_name", "")
+        from_addr = msg.get("from_addr", "")
+        from_display = f"{from_name} ({from_addr})" if from_name and from_addr else (from_name or from_addr or "")
+        subject = msg.get("subject", "(no subject)")
+        folder = msg.get("folder", "")
+        from_display = from_display[:28] if len(from_display) > 28 else from_display
+        subject = subject[:38] if len(subject) > 38 else subject
+        folder = folder[:18] if len(folder) > 18 else folder
+        date = msg.get("date", "")[:18]
+        print(f"{msg['uid']:<8} {folder:<20} {from_display:<30} {subject:<40} {date:<20} {status}")
+
+
+def cmd_search(args: argparse.Namespace, cfg: dict[str, Any]) -> int:
+    """Handle the search subcommand."""
+    if not validate_config(cfg, require_smtp=False, require_imap=True):
+        return 1
+
+    query: dict[str, Any] = {}
+    if args.from_addr:
+        query["from_addr"] = args.from_addr
+    if args.subject:
+        query["subject"] = args.subject
+    if args.text:
+        query["text"] = args.text
+    if args.since:
+        query["since"] = args.since
+    if args.unseen:
+        query["unseen"] = True
+
+    folders = args.folders.split(",") if args.folders else ["INBOX", "INBOX.Processed"]
+
+    try:
+        messages = search_messages(
+            query,
+            folders=folders,
+            limit=args.limit,
+            config=build_waggle_config(cfg),
+        )
+    except (ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        logger.error(f"Failed to search messages: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error searching messages: {e}")
+        return 1
+
+    data = {
+        "query": query,
+        "folders": folders,
+        "count": len(messages),
+        "messages": messages,
+    }
+
+    if args.human:
+        output_human_search(data)
+    else:
+        output_json(data)
+
+    return 0
+
+
 def get_folder_stats(
     cfg: dict[str, Any],
     folders: Optional[list[str]] = None,
@@ -1235,6 +1319,7 @@ def main() -> int:
     send_parser.add_argument("--footer-category", choices=["token_economics", "social_proof", "fomo", "cheeky"], help="Footer category filter")
     send_parser.add_argument("--footer-context", choices=["announcement", "discussion"], help="Footer context filter")
     send_parser.add_argument("--skip-duplicate-check", action="store_true", help="Skip duplicate detection")
+    send_parser.add_argument("--no-save-sent", action="store_true", help="Skip saving to Sent folder (overrides default)")
     send_parser.add_argument("--dry-run", action="store_true", help="Validate config without sending")
 
     # list subcommand
@@ -1286,6 +1371,17 @@ def main() -> int:
     # config subcommand
     subparsers.add_parser("config", help="Validate configuration")
 
+    # search subcommand
+    search_parser = subparsers.add_parser("search", help="Search messages across folders")
+    search_parser.add_argument("--from", dest="from_addr", default=None, help="Filter by sender address or name")
+    search_parser.add_argument("--subject", default=None, help="Filter by subject keyword")
+    search_parser.add_argument("--text", default=None, help="Full-text body search")
+    search_parser.add_argument("--since", default=None, help="Only messages since date (e.g. 17-Apr-2026)")
+    search_parser.add_argument("--unseen", action="store_true", default=False, help="Only unread messages")
+    search_parser.add_argument("--folders", default=None, help="Comma-separated folder list (default: INBOX,INBOX.Processed)")
+    search_parser.add_argument("--limit", type=int, default=20, help="Max results per folder (default: 20)")
+    search_parser.add_argument("--human", action="store_true", help="Human-readable output")
+
     args = parser.parse_args(argv[1:])
 
     if not args.command:
@@ -1310,6 +1406,7 @@ def main() -> int:
         "move": cmd_move,
         "stats": cmd_stats,
         "config": cmd_config,
+        "search": cmd_search,
     }
 
     handler = commands.get(args.command)
