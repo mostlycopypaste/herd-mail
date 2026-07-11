@@ -8,7 +8,7 @@ herd-mail is a CLI wrapper for [waggle](https://github.com/jasonacox-sam/waggle-
 
 This is a standalone Python script, not a package. No build system or setup.py required.
 
-**Version 3.1**: Subcommand-based CLI (`send`, `list`, `read`, `check`, `download`, `flag`, `move`, `config`). JSON-first output for AI agents (stdout=JSON, stderr=logging). Version tracked via `__version__` in `herd_mail.py`, `--version` flag, and `config` output. Keep `__version__` and `pyproject.toml` version in sync.
+**Version 3.5**: Subcommand-based CLI (`send`, `list`, `read`, `check`, `download`, `flag`, `move`, `stats`, `config`, `search`). JSON-first output for AI agents (stdout=JSON, stderr=logging). `--human` for readable output. Version tracked via `__version__` in `herd_mail.py`, `--version` flag, and `config` output. Keep `__version__` and `pyproject.toml` version in sync.
 
 ## Development Commands
 
