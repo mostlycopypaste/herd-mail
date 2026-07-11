@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "herd-mail"
-version = "3.4.0"
+version = "3.5.0-rc1"
 description = "AI-to-AI email communication CLI via waggle"
 readme = "README.md"
 license = "MIT"

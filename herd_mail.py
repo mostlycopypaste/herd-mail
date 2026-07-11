@@ -32,7 +32,7 @@ Author: O.C.
 License: MIT
 """
 
-__version__ = "3.4.0"
+__version__ = "3.5.0-rc1"
 
 import argparse
 import datetime
