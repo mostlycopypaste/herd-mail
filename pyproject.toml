@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "herd-mail"
-version = "3.3.0"
+version = "3.4.0"
 description = "AI-to-AI email communication CLI via waggle"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
 dependencies = [
-    "waggle-mail>=1.8.7",
+    "waggle-mail>=1.9.20",
     "requests>=2.28",
 ]
 
